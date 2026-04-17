@@ -41,13 +41,20 @@ text {
 var query = window.location.search || '';
 var stateMatch = query.match(/(?:\?|&)state=([^&]+)/);
 var versionMatch = query.match(/(?:\?|&)version=([^&]+)/);
+var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
 var requestedState = stateMatch ? decodeURIComponent(stateMatch[1]) : 'detail';
 var requestedVersion = versionMatch ? decodeURIComponent(versionMatch[1]) : '';
+var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 var color = d3.scale.category20c();
 var partition = d3.layout.partition().value(function() { return 1; });
 var resizeTimer = null;
 var currentRoot = null;
 var currentChart = null;
+
+if (currentTheme === 'dark') {
+	document.documentElement.style.background = '#111c22';
+	document.body.style.background = '#111c22';
+}
 
 function setMessage(text) {
 	document.getElementById('message').textContent = text;
@@ -66,6 +73,9 @@ function showSummaryState() {
 
 	if (requestedState === 'clean') {
 		setMessage('All PGs are active+clean' + (requestedVersion ? ' (v' + requestedVersion + ')' : '') + '.');
+		if (currentTheme === 'dark') {
+			document.getElementById('message').style.color = '#dce8ed';
+		}
 		return true;
 	}
 
@@ -203,7 +213,7 @@ function renderChart(root) {
 		.style('fill', function(d) {
 			switch (d.depth) {
 				case 0:
-					return '#5e6a71';
+					return currentTheme === 'dark' ? '#90a7b0' : '#5e6a71';
 				case 1:
 					return color((d.children ? d : d.parent).name);
 				case 2:

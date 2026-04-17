@@ -29,6 +29,10 @@ html, body {
 	text-transform: uppercase;
 }
 
+.theme-dark .control-group {
+	color: #dce8ed;
+}
+
 .control-group select {
 	border: 1px solid rgba(52, 68, 77, 0.18);
 	border-radius: 999px;
@@ -37,6 +41,12 @@ html, body {
 	padding: 5px 10px;
 	font: inherit;
 	text-transform: none;
+}
+
+.theme-dark .control-group select {
+	background: #18262d;
+	color: #dce8ed;
+	border-color: rgba(159, 180, 189, 0.24);
 }
 
 svg {
@@ -87,6 +97,13 @@ svg {
 	font: 12px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
 }
 
+.theme-dark .axis text,
+.theme-dark .metric-label,
+.theme-dark .legend,
+.theme-dark .message {
+	fill: #dce8ed;
+}
+
 .metric-label {
 	font-weight: 700;
 }
@@ -114,6 +131,11 @@ svg {
 	font: 11px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
+}
+
+.theme-dark .latency-box {
+	background: rgba(220, 232, 237, 0.08);
+	color: #dce8ed;
 }
 
 .latency-value {
@@ -189,6 +211,8 @@ var height;
 var resizeTimer = null;
 var query = window.location.search || '';
 var singleMode = /(?:\?|&)mode=single(?:&|$)/.test(query);
+var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
+var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 var currentReadOps = 0;
 var currentWriteOps = 0;
 var currentTotalOps = 0;
@@ -197,6 +221,12 @@ var plot;
 var barWidth = 0;
 var currentLatencyLabel = '--';
 var latencyEnabled = false;
+
+if (currentTheme === 'dark') {
+	document.documentElement.classList.add('theme-dark');
+	document.documentElement.style.background = '#111c22';
+	document.body.style.background = '#111c22';
+}
 
 function setMessage(text) {
 	document.getElementById('message').textContent = text;

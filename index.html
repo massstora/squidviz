@@ -19,6 +19,19 @@
 	--surface: #f6fafb;
 }
 
+body.theme-dark {
+	--page-bg: linear-gradient(180deg, #0f1a20 0%, #16252d 100%);
+	--panel-bg: rgba(26, 39, 46, 0.9);
+	--panel-border: rgba(141, 171, 184, 0.16);
+	--panel-shadow: 0 16px 34px rgba(0, 0, 0, 0.35);
+	--text: #e7f0f3;
+	--muted: #9fb4bd;
+	--accent: #43bfd2;
+	--accent-strong: #ff7868;
+	--success: #31c772;
+	--surface: #111c22;
+}
+
 * {
 	box-sizing: border-box;
 }
@@ -36,6 +49,13 @@ body {
 	background:
 		radial-gradient(circle at top left, rgba(12, 154, 176, 0.16), transparent 28%),
 		radial-gradient(circle at top right, rgba(240, 92, 86, 0.14), transparent 24%),
+		var(--page-bg);
+}
+
+body.theme-dark {
+	background:
+		radial-gradient(circle at top left, rgba(67, 191, 210, 0.12), transparent 28%),
+		radial-gradient(circle at top right, rgba(255, 120, 104, 0.12), transparent 24%),
 		var(--page-bg);
 }
 
@@ -61,6 +81,11 @@ a {
 	background: rgba(255, 255, 255, 0.8);
 	box-shadow: 0 6px 18px rgba(37, 56, 64, 0.06);
 	color: var(--text);
+}
+
+body.theme-dark .topbar {
+	background: rgba(18, 29, 35, 0.92);
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
 }
 
 .brand {
@@ -118,6 +143,14 @@ a {
 	font-size: 0.78rem;
 }
 
+body.theme-dark .button,
+body.theme-dark .toggle,
+body.theme-dark .toggle select {
+	background: #18262d;
+	color: var(--text);
+	border-color: rgba(67, 191, 210, 0.22);
+}
+
 .button {
 	cursor: pointer;
 }
@@ -134,6 +167,11 @@ a {
 	color: #ffffff;
 }
 
+body.theme-dark .button--accent {
+	background: var(--accent-strong);
+	color: #091217;
+}
+
 .toggle input {
 	accent-color: var(--accent);
 }
@@ -147,6 +185,10 @@ a {
 	background: #f1f7f8;
 	color: var(--muted);
 	font-size: 0.78rem;
+}
+
+body.theme-dark .status {
+	background: #15232a;
 }
 
 .status-dot {
@@ -248,6 +290,10 @@ a {
 	background: linear-gradient(180deg, #f7fbfb 0%, #eef4f5 100%);
 }
 
+body.theme-dark .legend {
+	background: linear-gradient(180deg, #17262d 0%, #121d23 100%);
+}
+
 .legend-list {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -321,11 +367,12 @@ function reloadFrame(selector) {
 
 function setLogicalFrame(data) {
 	var src;
+	var theme = $('body').hasClass('theme-dark') ? 'dark' : 'light';
 
 	if (data.has_unhealthy) {
-		src = 'logical.html?state=detail&version=' + encodeURIComponent(data.pgmap);
+		src = 'logical.html?state=detail&version=' + encodeURIComponent(data.pgmap) + '&theme=' + encodeURIComponent(theme);
 	} else {
-		src = 'logical.html?state=clean&version=' + encodeURIComponent(data.pgmap);
+		src = 'logical.html?state=clean&version=' + encodeURIComponent(data.pgmap) + '&theme=' + encodeURIComponent(theme);
 	}
 
 	if (logicalFrameKey === src) {
@@ -338,7 +385,23 @@ function setLogicalFrame(data) {
 
 function updatePhysicalFrameDepth() {
 	var depth = $('#physical-depth').val();
-	$('#osdtree').attr('src', 'physical.html?depth=' + encodeURIComponent(depth));
+	var theme = $('body').hasClass('theme-dark') ? 'dark' : 'light';
+	$('#osdtree').attr('src', 'physical.html?depth=' + encodeURIComponent(depth) + '&theme=' + encodeURIComponent(theme));
+}
+
+function applyTheme(isDark) {
+	$('body').toggleClass('theme-dark', isDark);
+	window.localStorage.setItem('squidviz-theme', isDark ? 'dark' : 'light');
+	updatePhysicalFrameDepth();
+	if (pgVersion !== null) {
+		setLogicalFrame({
+			has_unhealthy: logicalFrameKey !== null && logicalFrameKey.indexOf('state=detail') !== -1,
+			pgmap: pgVersion
+		});
+	} else {
+		$('#pgmap').attr('src', 'logical.html?state=loading&theme=' + encodeURIComponent(isDark ? 'dark' : 'light'));
+	}
+	$('#iopsgraph').attr('src', 'iops.html?theme=' + encodeURIComponent(isDark ? 'dark' : 'light'));
 }
 
 function pollOsdState() {
@@ -411,6 +474,11 @@ function pollPgState() {
 }
 
 $(function() {
+	var savedTheme = window.localStorage.getItem('squidviz-theme');
+	var darkMode = savedTheme === 'dark';
+	$('#dark-mode').prop('checked', darkMode);
+	applyTheme(darkMode);
+
 	$('#upd-physical').on('click', function() {
 		reloadFrame('#osdtree');
 	});
@@ -422,6 +490,10 @@ $(function() {
 	$('#show-physical').on('change', function() {
 		var showPhysical = $(this).is(':checked');
 		$('#dashboard').toggleClass('dashboard--logical-only', !showPhysical);
+	});
+
+	$('#dark-mode').on('change', function() {
+		applyTheme($(this).is(':checked'));
 	});
 
 	$('#toggle-legend').on('click', function(event) {
@@ -467,6 +539,10 @@ $(function() {
 						<input type="checkbox" id="upd-logical" name="upd-logical" checked>
 						<span>Auto</span>
 					</label>
+					<label class="toggle" for="dark-mode">
+						<input type="checkbox" id="dark-mode" name="dark-mode">
+						<span>NOC</span>
+					</label>
 					<button class="button" id="toggle-legend" type="button">Legend</button>
 				</div>
 				<div class="status" aria-live="polite">
@@ -485,7 +561,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?state=loading"></iframe>
+					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?state=loading&theme=light"></iframe>
 				</div>
 				<div class="legend" id="legend">
 					<ul class="legend-list">
@@ -515,7 +591,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--physical" scrolling="no" id="osdtree" name="osdtree" src="physical.html"></iframe>
+					<iframe class="frame frame--physical" scrolling="no" id="osdtree" name="osdtree" src="physical.html?depth=2&theme=light"></iframe>
 				</div>
 			</article>
 
@@ -527,7 +603,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--iops" scrolling="no" id="iopsgraph" name="iops" src="iops.html"></iframe>
+					<iframe class="frame frame--iops" scrolling="no" id="iopsgraph" name="iops" src="iops.html?theme=light"></iframe>
 				</div>
 			</article>
 		</section>

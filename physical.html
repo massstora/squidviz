@@ -48,10 +48,17 @@ var nodeIndex = 0;
 var resizeTimer = null;
 var query = window.location.search || '';
 var depthMatch = query.match(/(?:\?|&)depth=([^&]+)/);
+var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
 var defaultDepth = depthMatch ? parseInt(decodeURIComponent(depthMatch[1]), 10) : 2;
+var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 
 if (isNaN(defaultDepth) || defaultDepth < 1) {
 	defaultDepth = 2;
+}
+
+if (currentTheme === 'dark') {
+	document.documentElement.style.background = '#111c22';
+	document.body.style.background = '#111c22';
 }
 
 function setMessage(text) {
@@ -59,6 +66,10 @@ function setMessage(text) {
 }
 
 function nodeColor(d) {
+	if (d.hasIssue && d.type !== 'osd') {
+		return '#ff8b5f';
+	}
+
 	if (d.type === 'osd') {
 		return d.status === 'up' ? '#0f9d58' : '#c44936';
 	}
@@ -79,7 +90,7 @@ function nodeColor(d) {
 		return '#8b5e3c';
 	}
 
-	return '#5e6a71';
+	return currentTheme === 'dark' ? '#90a7b0' : '#5e6a71';
 }
 
 function formatNodeLabel(d) {
@@ -197,6 +208,7 @@ function update(source) {
 		.attr('dy', '.35em')
 		.attr('text-anchor', function(d) { return d.children || d._children ? 'end' : 'start'; })
 		.text(formatNodeLabel)
+		.style('fill', currentTheme === 'dark' ? '#dce8ed' : '#34444d')
 		.style('fill-opacity', 1e-6);
 
 	var nodeUpdate = node.transition()
@@ -207,6 +219,7 @@ function update(source) {
 		.style('fill', nodeColor);
 
 	nodeUpdate.select('text')
+		.style('fill', currentTheme === 'dark' ? '#dce8ed' : '#34444d')
 		.style('fill-opacity', 1);
 
 	var nodeExit = node.exit().transition()

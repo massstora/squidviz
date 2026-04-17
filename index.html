@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SquidViz | Ceph Visualizer</title>
+<script src="jquery.min.js"></script>
+<style>
+:root {
+	--page-bg: linear-gradient(180deg, #eef3f5 0%, #d7e3e6 100%);
+	--panel-bg: rgba(255, 255, 255, 0.88);
+	--panel-border: rgba(69, 90, 100, 0.18);
+	--panel-shadow: 0 16px 34px rgba(37, 56, 64, 0.1);
+	--text: #21343d;
+	--muted: #58707a;
+	--accent: #0c9ab0;
+	--accent-strong: #f05c56;
+	--success: #0f9d58;
+	--surface: #f6fafb;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html {
+	min-height: 100%;
+	background: #d7e3e6;
+	border-top: 5px solid var(--accent-strong);
+}
+
+body {
+	margin: 0;
+	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+	color: var(--text);
+	background:
+		radial-gradient(circle at top left, rgba(12, 154, 176, 0.16), transparent 28%),
+		radial-gradient(circle at top right, rgba(240, 92, 86, 0.14), transparent 24%),
+		var(--page-bg);
+}
+
+a {
+	color: inherit;
+}
+
+.page {
+	max-width: 100vw;
+	margin: 0 auto;
+	padding: 8px;
+}
+
+.topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 8px;
+	padding: 6px 10px;
+	border: 1px solid rgba(69, 90, 100, 0.12);
+	border-radius: 14px;
+	background: rgba(255, 255, 255, 0.8);
+	box-shadow: 0 6px 18px rgba(37, 56, 64, 0.06);
+	color: var(--text);
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.brand img {
+	width: 28px;
+	height: auto;
+}
+
+.brand-copy h1 {
+	margin: 0;
+	font-size: 0.95rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.brand-copy p {
+	margin: 1px 0 0;
+	font-size: 0.72rem;
+	color: var(--muted);
+	line-height: 1.2;
+}
+
+.toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.toolbar-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.button,
+.toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 999px;
+	border: 1px solid rgba(12, 154, 176, 0.18);
+	background: #ffffff;
+	color: var(--text);
+	font: inherit;
+	font-size: 0.78rem;
+}
+
+.button {
+	cursor: pointer;
+}
+
+.button:hover,
+.button:focus-visible {
+	border-color: rgba(240, 92, 86, 0.28);
+	transform: translateY(-1px);
+}
+
+.button--accent {
+	background: var(--accent-strong);
+	border-color: transparent;
+	color: #ffffff;
+}
+
+.toggle input {
+	accent-color: var(--accent);
+}
+
+.status {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 999px;
+	background: #f1f7f8;
+	color: var(--muted);
+	font-size: 0.78rem;
+}
+
+.status-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: var(--success);
+	box-shadow: 0 0 0 4px rgba(15, 157, 88, 0.15);
+}
+
+.dashboard {
+	display: grid;
+	grid-template-columns: 1.08fr 1fr;
+	grid-template-rows: minmax(0, 1fr) auto;
+	gap: 8px;
+	height: calc(100vh - 24px);
+}
+
+.card {
+	border: 1px solid var(--panel-border);
+	border-radius: 16px;
+	background: var(--panel-bg);
+	box-shadow: var(--panel-shadow);
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.card--wide {
+	grid-column: 1 / -1;
+}
+
+.dashboard--logical-only {
+	grid-template-columns: 1fr;
+}
+
+.dashboard--logical-only #physical-card {
+	display: none;
+}
+
+.card-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 12px 6px;
+	border-bottom: 1px solid rgba(69, 90, 100, 0.12);
+}
+
+.card-title {
+	margin: 0;
+	font-size: 0.82rem;
+	font-weight: 700;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
+.card-subtitle {
+	margin: 2px 0 0;
+	color: var(--muted);
+	font-size: 0.72rem;
+}
+
+.card-body {
+	padding: 6px;
+	background: var(--surface);
+	flex: 1;
+	min-height: 0;
+}
+
+.frame {
+	width: 100%;
+	border: 0;
+	border-radius: 12px;
+	background: #ffffff;
+	display: block;
+}
+
+.frame--logical {
+	height: 100%;
+	min-height: 0;
+}
+
+.frame--physical {
+	height: 100%;
+	min-height: 0;
+}
+
+.frame--iops {
+	height: clamp(140px, 18vh, 220px);
+	min-height: 140px;
+}
+
+.legend {
+	display: none;
+	padding: 10px 12px 12px;
+	border-top: 1px solid rgba(69, 90, 100, 0.12);
+	background: linear-gradient(180deg, #f7fbfb 0%, #eef4f5 100%);
+}
+
+.legend-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 10px 16px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.legend-item {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	color: var(--muted);
+	font-size: 0.92rem;
+	text-transform: uppercase;
+}
+
+.legend-swatch {
+	width: 16px;
+	height: 16px;
+	border-radius: 5px;
+	flex: none;
+}
+
+@media (max-width: 1040px) {
+	.dashboard {
+		grid-template-columns: 1fr;
+		grid-template-rows: auto auto auto;
+		height: auto;
+	}
+}
+
+@media (max-width: 720px) {
+	.page {
+		padding: 6px;
+	}
+
+	.topbar,
+	.card-header,
+	.legend {
+		padding-inline: 10px;
+	}
+
+	.brand {
+		align-items: flex-start;
+	}
+
+	.brand img {
+		width: 24px;
+	}
+}
+</style>
+<script>
+var pgVersion = null;
+var osdVersion = null;
+var logicalFrameKey = null;
+
+function updateStatus(message, healthy) {
+	var $text = $('#refresh-status-text');
+	var $dot = $('#refresh-status-dot');
+	$text.text(message);
+	$dot.css('background', healthy ? 'var(--success)' : 'var(--accent-strong)');
+	$dot.css('box-shadow', healthy ? '0 0 0 4px rgba(15, 157, 88, 0.15)' : '0 0 0 4px rgba(240, 92, 86, 0.16)');
+}
+
+function reloadFrame(selector) {
+	var $frame = $(selector);
+	$frame.attr('src', $frame.attr('src'));
+}
+
+function setLogicalFrame(data) {
+	var src;
+
+	if (data.has_unhealthy) {
+		src = 'logical.html?state=detail&version=' + encodeURIComponent(data.pgmap);
+	} else {
+		src = 'logical.html?state=clean&version=' + encodeURIComponent(data.pgmap);
+	}
+
+	if (logicalFrameKey === src) {
+		return;
+	}
+
+	logicalFrameKey = src;
+	$('#pgmap').attr('src', src);
+}
+
+function updatePhysicalFrameDepth() {
+	var depth = $('#physical-depth').val();
+	$('#osdtree').attr('src', 'physical.html?depth=' + encodeURIComponent(depth));
+}
+
+function pollOsdState() {
+	if (!$('#show-physical').is(':checked')) {
+		window.setTimeout(pollOsdState, 10000);
+		return;
+	}
+
+	$.ajax({
+		url: 'json/osdmap.php',
+		type: 'GET',
+		dataType: 'json',
+		cache: false
+	}).done(function(data) {
+		if (!data.ok) {
+			return;
+		}
+
+		if (osdVersion === null) {
+			osdVersion = data.osdmap;
+			return;
+		}
+
+		if (data.osdmap !== osdVersion) {
+			osdVersion = data.osdmap;
+			reloadFrame('#osdtree');
+		}
+	}).always(function() {
+		window.setTimeout(pollOsdState, 10000);
+	});
+}
+
+function pollPgState() {
+	if (!$('#upd-logical').is(':checked')) {
+		window.setTimeout(pollPgState, 10000);
+		return;
+	}
+
+	$.ajax({
+		url: 'json/pgmap.php',
+		type: 'GET',
+		dataType: 'json',
+		cache: false
+	}).done(function(data) {
+		if (!data.ok) {
+			updateStatus('Logical refresh check failed', false);
+			return;
+		}
+
+		if (pgVersion === null) {
+			pgVersion = data.pgmap;
+			setLogicalFrame(data);
+			updateStatus('Watching Ceph for PG changes', true);
+			return;
+		}
+
+		if (data.pgmap !== pgVersion) {
+			pgVersion = data.pgmap;
+			setLogicalFrame(data);
+			updateStatus('PG state changed, refreshing logical view', true);
+			return;
+		}
+
+		updateStatus('No PG changes detected', true);
+	}).fail(function() {
+		updateStatus('Unable to query Ceph refresh state', false);
+	}).always(function() {
+		window.setTimeout(pollPgState, 10000);
+	});
+}
+
+$(function() {
+	$('#upd-physical').on('click', function() {
+		reloadFrame('#osdtree');
+	});
+
+	$('#physical-depth').on('change', function() {
+		updatePhysicalFrameDepth();
+	});
+
+	$('#show-physical').on('change', function() {
+		var showPhysical = $(this).is(':checked');
+		$('#dashboard').toggleClass('dashboard--logical-only', !showPhysical);
+	});
+
+	$('#toggle-legend').on('click', function(event) {
+		event.preventDefault();
+		$('#legend').slideToggle(250);
+	});
+
+	updateStatus('Starting refresh loop', true);
+	updatePhysicalFrameDepth();
+	window.setTimeout(pollPgState, 1000);
+	window.setTimeout(pollOsdState, 1500);
+});
+</script>
+</head>
+<body>
+	<div class="page">
+		<header class="topbar">
+			<div class="brand">
+				<img src="images/logo.png" alt="SquidViz logo">
+				<div class="brand-copy">
+					<h1>SquidViz</h1>
+					<p>Live Ceph wallboard</p>
+				</div>
+			</div>
+			<div class="toolbar">
+				<div class="toolbar-group">
+					<button class="button button--accent" id="upd-physical" type="button">Refresh Failure Domains</button>
+					<label class="toggle" for="show-physical">
+						<input type="checkbox" id="show-physical" name="show-physical" checked>
+						<span>Failure Domains</span>
+					</label>
+					<label class="toggle" for="physical-depth">
+						<span>Depth</span>
+						<select id="physical-depth" name="physical-depth">
+							<option value="1">1</option>
+							<option value="2" selected>2</option>
+							<option value="3">3</option>
+							<option value="4">4</option>
+							<option value="99">All</option>
+						</select>
+					</label>
+					<label class="toggle" for="upd-logical">
+						<input type="checkbox" id="upd-logical" name="upd-logical" checked>
+						<span>Auto</span>
+					</label>
+					<button class="button" id="toggle-legend" type="button">Legend</button>
+				</div>
+				<div class="status" aria-live="polite">
+					<span class="status-dot" id="refresh-status-dot"></span>
+					<span id="refresh-status-text">Waiting for status</span>
+				</div>
+			</div>
+		</header>
+
+		<section class="dashboard" id="dashboard">
+			<article class="card">
+				<header class="card-header">
+					<div>
+						<h2 class="card-title">Logical</h2>
+						<p class="card-subtitle">PG issues grouped by pool and updated automatically.</p>
+					</div>
+				</header>
+				<div class="card-body">
+					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?state=loading"></iframe>
+				</div>
+				<div class="legend" id="legend">
+					<ul class="legend-list">
+						<li class="legend-item"><span class="legend-swatch" style="background:#00de00"></span>active+clean</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#00ac08"></span>active+remapped</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#106e09"></span>stale+active+clean</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#e2d900"></span>active+degraded</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#fff500"></span>active+clean+replay</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#c3bb00"></span>stale+active+degraded</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#aaaaaa"></span>active+recovering</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#959595"></span>active+recovery_wait</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#7c5cff"></span>scrubbing</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#3b82f6"></span>deep scrub</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#ba1f69"></span>peering</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#80d2dc"></span>creating</li>
+						<li class="legend-item"><span class="legend-swatch" style="background:#b51a00"></span>down</li>
+					</ul>
+				</div>
+			</article>
+
+			<article class="card">
+			<article class="card" id="physical-card">
+				<header class="card-header">
+					<div>
+						<h2 class="card-title">CRUSH Failure Domains</h2>
+						<p class="card-subtitle">CRUSH hierarchy and OSD placement buckets from the current Ceph tree.</p>
+					</div>
+				</header>
+				<div class="card-body">
+					<iframe class="frame frame--physical" scrolling="no" id="osdtree" name="osdtree" src="physical.html"></iframe>
+				</div>
+			</article>
+
+			<article class="card card--wide">
+				<header class="card-header">
+					<div>
+						<h2 class="card-title">IOPS</h2>
+						<p class="card-subtitle">Rolling operations per second from `ceph -s -f json`.</p>
+					</div>
+				</header>
+				<div class="card-body">
+					<iframe class="frame frame--iops" scrolling="no" id="iopsgraph" name="iops" src="iops.html"></iframe>
+				</div>
+			</article>
+		</section>
+	</div>
+</body>
+</html>

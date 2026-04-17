@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	background: #ffffff;
+	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+path {
+	stroke: #eef4f5;
+	fill-rule: evenodd;
+}
+
+text {
+	font: 12px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
+	fill: #34444d;
+}
+
+.center {
+	font-size: 16px;
+	font-weight: 700;
+}
+
+.message {
+	padding: 24px;
+	color: #58707a;
+	font-size: 16px;
+	text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="message" id="message">Loading PG map...</div>
+<script src="d3.v3.min.js"></script>
+<script>
+var query = window.location.search || '';
+var stateMatch = query.match(/(?:\?|&)state=([^&]+)/);
+var versionMatch = query.match(/(?:\?|&)version=([^&]+)/);
+var requestedState = stateMatch ? decodeURIComponent(stateMatch[1]) : 'detail';
+var requestedVersion = versionMatch ? decodeURIComponent(versionMatch[1]) : '';
+var color = d3.scale.category20c();
+var partition = d3.layout.partition().value(function() { return 1; });
+var resizeTimer = null;
+var currentRoot = null;
+var currentChart = null;
+
+function setMessage(text) {
+	document.getElementById('message').textContent = text;
+}
+
+function showChart() {
+	document.getElementById('message').style.display = 'none';
+	d3.select('svg').style('display', 'block');
+}
+
+function showSummaryState() {
+	if (requestedState === 'loading') {
+		setMessage('Checking PG state...');
+		return true;
+	}
+
+	if (requestedState === 'clean') {
+		setMessage('All PGs are active+clean' + (requestedVersion ? ' (v' + requestedVersion + ')' : '') + '.');
+		return true;
+	}
+
+	return false;
+}
+
+function stateColor(state) {
+	if (!state) {
+		return '#000000';
+	}
+
+	if (state === 'creating') {
+		return '#80d2dc';
+	}
+
+	if (state.indexOf('deep') !== -1 && state.indexOf('scrub') !== -1) {
+		return '#3b82f6';
+	}
+
+	if (state.indexOf('scrubbing') !== -1 || state.indexOf('scrub') !== -1) {
+		return '#7c5cff';
+	}
+
+	if (state.indexOf('peering') !== -1) {
+		return '#ba1f69';
+	}
+
+	if (state.indexOf('recovering') !== -1) {
+		return '#aaaaaa';
+	}
+
+	if (state.indexOf('recovery_wait') !== -1) {
+		return '#959595';
+	}
+
+	if (state.indexOf('stale') !== -1 && state.indexOf('degraded') !== -1) {
+		return '#c3bb00';
+	}
+
+	if (state.indexOf('stale') !== -1 && state.indexOf('clean') !== -1) {
+		return '#106e09';
+	}
+
+	if (state.indexOf('degraded') !== -1) {
+		return '#e2d900';
+	}
+
+	if (state.indexOf('clean+replay') !== -1) {
+		return '#fff500';
+	}
+
+	if (state.indexOf('remapped') !== -1) {
+		return '#00ac08';
+	}
+
+	if (state.indexOf('active+clean') !== -1) {
+		return '#00de00';
+	}
+
+	return '#000000';
+}
+
+function computeTextRotation(d) {
+	var x = currentChart.x;
+	return (x(d.x + d.dx / 2) - Math.PI / 2) / Math.PI * 180;
+}
+
+function arcTween(d) {
+	var x = currentChart.x;
+	var y = currentChart.y;
+	var radius = currentChart.radius;
+	var arc = currentChart.arc;
+	var xd = d3.interpolate(x.domain(), [d.x, d.x + d.dx]);
+	var yd = d3.interpolate(y.domain(), [d.y, 1]);
+	var yr = d3.interpolate(y.range(), [d.y ? 20 : 0, radius]);
+
+	return function(node, i) {
+		return i ? function() { return arc(node); } : function(t) {
+			x.domain(xd(t));
+			y.domain(yd(t)).range(yr(t));
+			return arc(node);
+		};
+	};
+}
+
+function getDimensions() {
+	var viewportWidth = Math.max(document.documentElement.clientWidth || 0, 320);
+	var viewportHeight = Math.max(window.innerHeight || 0, 420);
+	var width = viewportWidth;
+	var height = Math.max(Math.min(viewportHeight - 24, viewportWidth * 1.1), 360);
+	var radius = Math.min(width, height) / 2 - 16;
+
+	return {
+		width: width,
+		height: height,
+		radius: radius
+	};
+}
+
+function renderChart(root) {
+	currentRoot = root;
+	var dimensions = getDimensions();
+	var x = d3.scale.linear().range([0, 2 * Math.PI]);
+	var y = d3.scale.linear().range([0, dimensions.radius]);
+	var arc = d3.svg.arc()
+		.startAngle(function(d) { return Math.max(0, Math.min(2 * Math.PI, x(d.x))); })
+		.endAngle(function(d) { return Math.max(0, Math.min(2 * Math.PI, x(d.x + d.dx))); })
+		.innerRadius(function(d) { return Math.max(0, y(d.y)); })
+		.outerRadius(function(d) { return Math.max(0, y(d.y + d.dy)); });
+
+	currentChart = {
+		x: x,
+		y: y,
+		radius: dimensions.radius,
+		arc: arc
+	};
+
+	d3.select('svg').remove();
+
+	var svg = d3.select('body').append('svg')
+		.attr('width', dimensions.width)
+		.attr('height', dimensions.height + 24)
+		.style('display', 'none')
+		.append('g')
+		.attr('transform', 'translate(' + dimensions.width / 2 + ',' + (dimensions.height / 2 + 12) + ')');
+
+	showChart();
+
+	var g = svg.selectAll('g')
+		.data(partition.nodes(root))
+		.enter().append('g');
+
+	var path = g.append('path')
+		.attr('d', arc)
+		.style('fill', function(d) {
+			switch (d.depth) {
+				case 0:
+					return '#5e6a71';
+				case 1:
+					return color((d.children ? d : d.parent).name);
+				case 2:
+					return stateColor(d.state);
+				default:
+					return color((d.children ? d : d.parent).name);
+			}
+		})
+		.on('click', click);
+
+	var text = g.append('text')
+		.attr('transform', function(d) {
+			return d.depth === 0 ? 'rotate(0)' : 'rotate(' + computeTextRotation(d) + ')';
+		})
+		.attr('text-anchor', function(d) { return d.depth === 0 ? 'middle' : 'start'; })
+		.attr('x', function(d) { return y(d.y); })
+		.attr('dx', '6')
+		.attr('dy', '.35em')
+		.attr('class', function(d) { return d.depth === 0 ? 'center' : ''; })
+		.style('font-size', function(d) {
+			if (d.depth === 0) {
+				return Math.max(16, Math.round(dimensions.radius * 0.08)) + 'px';
+			}
+
+			if (d.depth === 1) {
+				return Math.max(11, Math.round(dimensions.radius * 0.045)) + 'px';
+			}
+
+			return '12px';
+		})
+		.text(function(d) {
+			if (d.depth === 0) {
+				return 'v' + d.version;
+			}
+
+			if (d.depth === 1) {
+				return d.pool_name;
+			}
+
+			return '';
+		});
+
+	g.append('svg:title').text(function(d) {
+		if (d.depth < 2) {
+			return '';
+		}
+
+		return d.pgid + ' | ' + d.objects + ' objects | ' + d.state;
+	});
+
+	function click(d) {
+		text.transition().attr('opacity', 0);
+
+		path.transition()
+			.duration(750)
+			.attrTween('d', arcTween(d))
+			.each('end', function(e) {
+				if (e.x >= d.x && e.x < (d.x + d.dx)) {
+					var arcText = d3.select(this.parentNode).select('text');
+					arcText.transition()
+						.duration(300)
+						.attr('opacity', 1)
+						.attr('transform', function(node) {
+							return node.depth === 0 ? 'rotate(0)' : 'rotate(' + computeTextRotation(node) + ')';
+						})
+						.attr('x', function(node) { return y(node.y); });
+				}
+			});
+	}
+
+	d3.select(self.frameElement).style('height', (dimensions.height + 24) + 'px');
+}
+
+if (showSummaryState()) {
+	// No heavy PG dump is needed for summary-only states.
+} else d3.json('json/pgdump.php', function(error, root) {
+	if (error) {
+		setMessage('Unable to load the PG map.');
+		return;
+	}
+
+	if (root.ok === false) {
+		setMessage(root.error || 'Unable to load the PG map.');
+		return;
+	}
+
+	if (!root.children || root.children.length === 0) {
+		setMessage('No unhealthy PGs to display. The cluster looks clean.');
+		return;
+	}
+
+	renderChart(root);
+
+	window.addEventListener('resize', function() {
+		window.clearTimeout(resizeTimer);
+		resizeTimer = window.setTimeout(function() {
+			if (currentRoot) {
+				renderChart(currentRoot);
+			}
+		}, 120);
+	});
+});
+</script>
+</body>
+</html>

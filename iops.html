@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	background: #ffffff;
+	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.chrome {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 12px 0;
+}
+
+.control-group {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	color: #34444d;
+	font: 12px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.control-group select {
+	border: 1px solid rgba(52, 68, 77, 0.18);
+	border-radius: 999px;
+	background: #f8fbfb;
+	color: #243b45;
+	padding: 5px 10px;
+	font: inherit;
+	text-transform: none;
+}
+
+svg {
+	display: block;
+	margin: 0 auto;
+}
+
+.area-read {
+	fill: rgba(12, 154, 176, 0.22);
+	stroke: none;
+}
+
+.area-write {
+	fill: rgba(240, 92, 86, 0.2);
+	stroke: none;
+}
+
+.line-total {
+	fill: none;
+	stroke: #243b45;
+	stroke-width: 3px;
+}
+
+.line-read {
+	fill: none;
+	stroke: #0c9ab0;
+	stroke-width: 2px;
+}
+
+.line-write {
+	fill: none;
+	stroke: #f05c56;
+	stroke-width: 2px;
+}
+
+.axis path,
+.axis line {
+	fill: none;
+	stroke: #5e6a71;
+	shape-rendering: crispEdges;
+}
+
+.axis text,
+.metric-label,
+.legend,
+.message {
+	fill: #34444d;
+	font: 12px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.metric-label {
+	font-weight: 700;
+}
+
+.legend {
+	font-size: 11px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.legend-swatch {
+	stroke-width: 10px;
+	stroke-linecap: round;
+}
+
+.message {
+	padding: 24px;
+	color: #58707a;
+	font-size: 16px;
+	text-align: center;
+}
+
+.bars-read {
+	fill: rgba(12, 154, 176, 0.8);
+}
+
+.bars-write {
+	fill: rgba(240, 92, 86, 0.72);
+}
+</style>
+</head>
+<body>
+<div class="chrome">
+	<div class="control-group">
+		<label for="viz-mode">Style</label>
+		<select id="viz-mode">
+			<option value="layered">Layered Area</option>
+			<option value="lines">Multi-Line</option>
+			<option value="bars">Read/Write Bars</option>
+		</select>
+	</div>
+</div>
+<div class="message" id="message">Loading IOPS history...</div>
+<script src="d3.v3.min.js"></script>
+<script>
+var points = 40;
+var readData = d3.range(points).map(function() { return 0; });
+var writeData = d3.range(points).map(function() { return 0; });
+var totalData = d3.range(points).map(function() { return 0; });
+var margin = {top: 18, right: 36, bottom: 24, left: 52};
+var x;
+var y;
+var totalLine;
+var readLine;
+var writeLine;
+var readArea;
+var writeArea;
+var svg;
+var axis;
+var totalPath;
+var readPath;
+var writePath;
+var readAreaPath;
+var writeAreaPath;
+var totalLabel;
+var readLabel;
+var writeLabel;
+var chart;
+var width;
+var height;
+var resizeTimer = null;
+var query = window.location.search || '';
+var singleMode = /(?:\?|&)mode=single(?:&|$)/.test(query);
+var currentReadOps = 0;
+var currentWriteOps = 0;
+var currentTotalOps = 0;
+var currentMode = 'layered';
+var plot;
+var barWidth = 0;
+
+function setMessage(text) {
+	document.getElementById('message').textContent = text;
+}
+
+function showChart() {
+	document.getElementById('message').style.display = 'none';
+	d3.select('svg').style('display', 'block');
+}
+
+function getDimensions() {
+	var chartWidth = Math.max(document.documentElement.clientWidth || 0, 320);
+	var viewportHeight = Math.max(window.innerHeight || 0, 220);
+	var chromeHeight = document.querySelector('.chrome').offsetHeight || 0;
+	var maxHeight = singleMode ? Math.max(viewportHeight - margin.top - margin.bottom - 8, 220) : 280;
+	var minHeight = singleMode ? Math.max(Math.floor(viewportHeight * 0.7), 260) : 180;
+
+	return {
+		width: chartWidth - margin.left - margin.right,
+		height: Math.max(Math.min(viewportHeight - chromeHeight - margin.top - margin.bottom - 12, maxHeight), minHeight)
+	};
+}
+
+function renderBase() {
+	var dimensions = getDimensions();
+	width = dimensions.width;
+	height = dimensions.height;
+
+	x = d3.scale.linear().domain([0, points - 1]).range([0, width]);
+	y = d3.scale.linear().domain([0, 2500]).range([height, 0]);
+	totalLine = d3.svg.line()
+		.x(function(d, i) { return x(i); })
+		.y(function(d) { return y(d); });
+	readLine = d3.svg.line()
+		.x(function(d, i) { return x(i); })
+		.y(function(d) { return y(d); });
+	writeLine = d3.svg.line()
+		.x(function(d, i) { return x(i); })
+		.y(function(d) { return y(d); });
+	readArea = d3.svg.area()
+		.x(function(d, i) { return x(i); })
+		.y0(height)
+		.y1(function(d) { return y(d); });
+	writeArea = d3.svg.area()
+		.x(function(d, i) { return x(i); })
+		.y0(height)
+		.y1(function(d) { return y(d); });
+
+	d3.select('svg').remove();
+
+	chart = d3.select('body')
+		.append('svg')
+		.attr('width', width + margin.left + margin.right)
+		.attr('height', height + margin.top + margin.bottom)
+		.style('display', 'none');
+
+	svg = chart.append('g')
+		.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+	svg.append('defs').append('clipPath')
+		.attr('id', 'clip')
+		.append('rect')
+		.attr('width', width)
+		.attr('height', height);
+
+	var yAxis = d3.svg.axis().scale(y).orient('left').ticks(5);
+
+	axis = svg.append('g')
+		.attr('class', 'y axis')
+		.call(yAxis);
+
+	plot = svg.append('g')
+		.attr('clip-path', 'url(#clip)')
+		.attr('class', 'plot');
+
+	var legend = svg.append('g')
+		.attr('class', 'legend')
+		.attr('transform', 'translate(0,-2)');
+
+	legend.append('line')
+		.attr('class', 'legend-swatch')
+		.attr('x1', 0)
+		.attr('x2', 14)
+		.attr('y1', 0)
+		.attr('y2', 0)
+		.style('stroke', '#0c9ab0');
+
+	legend.append('text')
+		.attr('x', 20)
+		.attr('y', 4)
+		.text('Read');
+
+	legend.append('line')
+		.attr('class', 'legend-swatch')
+		.attr('x1', 72)
+		.attr('x2', 86)
+		.attr('y1', 0)
+		.attr('y2', 0)
+		.style('stroke', '#f05c56');
+
+	legend.append('text')
+		.attr('x', 92)
+		.attr('y', 4)
+		.text('Write');
+
+	legend.append('line')
+		.attr('class', 'legend-swatch')
+		.attr('x1', 152)
+		.attr('x2', 166)
+		.attr('y1', 0)
+		.attr('y2', 0)
+		.style('stroke', '#243b45');
+
+	legend.append('text')
+		.attr('x', 172)
+		.attr('y', 4)
+		.text('Total');
+
+	totalLabel = svg.append('text')
+		.attr('class', 'metric-label')
+		.attr('x', width - 6)
+		.attr('y', 4)
+		.attr('text-anchor', 'end')
+		.text('Total 0');
+
+	readLabel = svg.append('text')
+		.attr('class', 'metric-label')
+		.attr('x', width - 6)
+		.attr('y', 20)
+		.attr('text-anchor', 'end')
+		.style('fill', '#0c9ab0')
+		.text('Read 0');
+
+	writeLabel = svg.append('text')
+		.attr('class', 'metric-label')
+		.attr('x', width - 6)
+		.attr('y', 36)
+		.attr('text-anchor', 'end')
+		.style('fill', '#f05c56')
+		.text('Write 0');
+
+	renderVisualMode();
+	d3.select(self.frameElement).style('height', (height + margin.top + margin.bottom + (document.querySelector('.chrome').offsetHeight || 0) + 12) + 'px');
+}
+
+function updateScale() {
+	var maxValue = d3.max(totalData);
+	var paddedMax = Math.max(100, Math.ceil(maxValue * 1.2));
+	y.domain([0, paddedMax]);
+	axis.call(d3.svg.axis().scale(y).orient('left').ticks(5));
+}
+
+function renderVisualMode() {
+	plot.selectAll('*').remove();
+
+	if (currentMode === 'bars') {
+		barWidth = Math.max(3, (width / points) * 0.35);
+
+		readAreaPath = null;
+		writeAreaPath = null;
+
+		readPath = plot.selectAll('rect.read')
+			.data(readData)
+			.enter()
+			.append('rect')
+			.attr('class', 'bars-read');
+
+		writePath = plot.selectAll('rect.write')
+			.data(writeData)
+			.enter()
+			.append('rect')
+			.attr('class', 'bars-write');
+
+		totalPath = plot.append('path')
+			.data([totalData])
+			.attr('class', 'line-total');
+
+		updateVisualMode(false);
+		return;
+	}
+
+	if (currentMode === 'layered') {
+		readAreaPath = plot.append('path')
+			.data([readData])
+			.attr('class', 'area-read');
+
+		writeAreaPath = plot.append('path')
+			.data([writeData])
+			.attr('class', 'area-write');
+	} else {
+		readAreaPath = null;
+		writeAreaPath = null;
+	}
+
+	readPath = plot.append('path')
+		.data([readData])
+		.attr('class', 'line-read');
+
+	writePath = plot.append('path')
+		.data([writeData])
+		.attr('class', 'line-write');
+
+	totalPath = plot.append('path')
+		.data([totalData])
+		.attr('class', 'line-total');
+
+	updateVisualMode(false);
+}
+
+function updateVisualMode(animate) {
+	if (currentMode === 'bars') {
+		readPath = readPath.data(readData);
+		writePath = writePath.data(writeData);
+		var readSelection = readPath;
+		var writeSelection = writePath;
+		var totalSelection = totalPath;
+
+		readSelection
+			.attr('x', function(d, i) { return x(i) - barWidth - 1; })
+			.attr('y', function(d) { return y(d); })
+			.attr('width', barWidth)
+			.attr('height', function(d) { return height - y(d); });
+
+		writeSelection
+			.attr('x', function(d, i) { return x(i) + 1; })
+			.attr('y', function(d) { return y(d); })
+			.attr('width', barWidth)
+			.attr('height', function(d) { return height - y(d); });
+
+		totalSelection.attr('d', totalLine);
+		return;
+	}
+
+	if (readAreaPath) {
+		var readAreaSelection = readAreaPath;
+		readAreaSelection.attr('d', readArea);
+	}
+
+	if (writeAreaPath) {
+		var writeAreaSelection = writeAreaPath;
+		writeAreaSelection.attr('d', writeArea);
+	}
+
+	var readLineSelection = readPath;
+	var writeLineSelection = writePath;
+	var totalLineSelection = totalPath;
+
+	readLineSelection.attr('d', readLine);
+	writeLineSelection.attr('d', writeLine);
+	totalLineSelection.attr('d', totalLine);
+}
+
+function tick() {
+	d3.json('json/iops.php', function(error, result) {
+		if (error) {
+			setMessage('Unable to load IOPS data.');
+			window.setTimeout(tick, 5000);
+			return;
+		}
+
+		if (result.ok === false) {
+			setMessage(result.error || 'Unable to load IOPS data.');
+			window.setTimeout(tick, 5000);
+			return;
+		}
+
+		showChart();
+
+		var readOps = result.ops_read > 0 ? result.ops_read : 0;
+		var writeOps = result.ops_write > 0 ? result.ops_write : 0;
+		var totalOps = result.ops > 0 ? result.ops : 0;
+		currentReadOps = readOps;
+		currentWriteOps = writeOps;
+		currentTotalOps = totalOps;
+		readData.push(readOps);
+		readData.shift();
+		writeData.push(writeOps);
+		writeData.shift();
+		totalData.push(totalOps);
+		totalData.shift();
+
+		updateScale();
+		totalLabel.text('Total ' + Math.round(totalOps));
+		readLabel.text('Read ' + Math.round(readOps));
+		writeLabel.text('Write ' + Math.round(writeOps));
+		updateVisualMode(true);
+		window.setTimeout(tick, 2000);
+	});
+}
+
+renderBase();
+document.getElementById('viz-mode').addEventListener('change', function(event) {
+	currentMode = event.target.value;
+	renderBase();
+	updateScale();
+	totalLabel.text('Total ' + Math.round(currentTotalOps));
+	readLabel.text('Read ' + Math.round(currentReadOps));
+	writeLabel.text('Write ' + Math.round(currentWriteOps));
+	showChart();
+});
+window.addEventListener('resize', function() {
+	window.clearTimeout(resizeTimer);
+	resizeTimer = window.setTimeout(function() {
+		renderBase();
+		updateScale();
+		totalLabel.text('Total ' + Math.round(currentTotalOps));
+		readLabel.text('Read ' + Math.round(currentReadOps));
+		writeLabel.text('Write ' + Math.round(currentWriteOps));
+		showChart();
+	}, 120);
+});
+tick();
+</script>
+</body>
+</html>

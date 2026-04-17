@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	background: #ffffff;
+	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+.node {
+	cursor: pointer;
+}
+
+.node text {
+	font-size: 14px;
+	fill: #34444d;
+}
+
+.link {
+	fill: none;
+	stroke: #d7e3e6;
+	stroke-width: 2px;
+}
+
+.message {
+	padding: 24px;
+	color: #58707a;
+	font-size: 16px;
+	text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="message" id="message">Loading Ceph OSD tree...</div>
+<script src="d3.v3.min.js"></script>
+<script>
+var margin = {top: 20, right: 180, bottom: 20, left: 140};
+var duration = 450;
+var root;
+var tree = d3.layout.tree();
+var diagonal = d3.svg.diagonal().projection(function(d) { return [d.y, d.x]; });
+var svg;
+var nodeIndex = 0;
+var resizeTimer = null;
+var query = window.location.search || '';
+var depthMatch = query.match(/(?:\?|&)depth=([^&]+)/);
+var defaultDepth = depthMatch ? parseInt(decodeURIComponent(depthMatch[1]), 10) : 2;
+
+if (isNaN(defaultDepth) || defaultDepth < 1) {
+	defaultDepth = 2;
+}
+
+function setMessage(text) {
+	document.getElementById('message').textContent = text;
+}
+
+function nodeColor(d) {
+	if (d.type === 'osd') {
+		return d.status === 'up' ? '#0f9d58' : '#c44936';
+	}
+
+	if (d.type === 'host') {
+		return '#0c9ab0';
+	}
+
+	if (d.type === 'rack') {
+		return '#7c5cff';
+	}
+
+	if (d.type === 'chassis' || d.type === 'row') {
+		return '#f59e0b';
+	}
+
+	if (d.type === 'room' || d.type === 'datacenter') {
+		return '#8b5e3c';
+	}
+
+	return '#5e6a71';
+}
+
+function formatNodeLabel(d) {
+	if (d.type === 'osd') {
+		return d.name;
+	}
+
+	if (d.type === 'root') {
+		return 'root: ' + d.name;
+	}
+
+	if (d.type) {
+		return d.type + ': ' + d.name;
+	}
+
+	return d.name;
+}
+
+function markHealth(node) {
+	var children = node.children || [];
+	var selfAffected = node.type === 'osd' && node.status !== 'up';
+	var descendantAffected = false;
+
+	children.forEach(function(child) {
+		if (markHealth(child)) {
+			descendantAffected = true;
+		}
+	});
+
+	node.hasIssue = selfAffected || descendantAffected;
+	return node.hasIssue;
+}
+
+function applyDefaultCollapse(node, depth) {
+	if (!node.children || !node.children.length) {
+		return;
+	}
+
+	node.children.forEach(function(child) {
+		applyDefaultCollapse(child, depth + 1);
+	});
+
+	if (defaultDepth !== 99 && depth >= defaultDepth && !node.hasIssue) {
+		node._children = node.children;
+		node.children = null;
+	}
+}
+
+function countNodes(node) {
+	if (!node || !node.children || !node.children.length) {
+		return 1;
+	}
+
+	return 1 + node.children.reduce(function(total, child) {
+		return total + countNodes(child);
+	}, 0);
+}
+
+function renderTree(data) {
+	document.getElementById('message').style.display = 'none';
+
+	var nodeCount = countNodes(data);
+	var viewportHeight = Math.max(window.innerHeight || 0, 420);
+	var viewportWidth = Math.max(document.documentElement.clientWidth || 0, 360);
+	var width = Math.max(220, viewportWidth - margin.left - margin.right - 12);
+	var height = Math.max(viewportHeight - margin.top - margin.bottom - 24, nodeCount * 26, 420);
+
+	tree.size([height, width]);
+
+	d3.select('svg').remove();
+
+	svg = d3.select('body')
+		.append('svg')
+		.attr('width', width + margin.left + margin.right)
+		.attr('height', height + margin.top + margin.bottom)
+		.append('g')
+		.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+	root = data;
+	markHealth(root);
+	applyDefaultCollapse(root, 0);
+	root.x0 = height / 2;
+	root.y0 = 0;
+
+	update(root);
+	d3.select(self.frameElement).style('height', (height + margin.top + margin.bottom) + 'px');
+}
+
+function update(source) {
+	var nodes = tree.nodes(root).reverse();
+	var links = tree.links(nodes);
+
+	nodes.forEach(function(d) {
+		d.y = d.depth * 180;
+	});
+
+	var node = svg.selectAll('g.node')
+		.data(nodes, function(d) { return d.id || (d.id = ++nodeIndex); });
+
+	var nodeEnter = node.enter().append('g')
+		.attr('class', 'node')
+		.attr('transform', function() { return 'translate(' + source.y0 + ',' + source.x0 + ')'; })
+		.on('click', click);
+
+	nodeEnter.append('rect')
+		.attr('width', 12)
+		.attr('height', 18)
+		.attr('x', -6)
+		.attr('y', -9)
+		.attr('rx', 3)
+		.style('fill', nodeColor);
+
+	nodeEnter.append('text')
+		.attr('x', function(d) { return d.children || d._children ? -12 : 12; })
+		.attr('dy', '.35em')
+		.attr('text-anchor', function(d) { return d.children || d._children ? 'end' : 'start'; })
+		.text(formatNodeLabel)
+		.style('fill-opacity', 1e-6);
+
+	var nodeUpdate = node.transition()
+		.duration(duration)
+		.attr('transform', function(d) { return 'translate(' + d.y + ',' + d.x + ')'; });
+
+	nodeUpdate.select('rect')
+		.style('fill', nodeColor);
+
+	nodeUpdate.select('text')
+		.style('fill-opacity', 1);
+
+	var nodeExit = node.exit().transition()
+		.duration(duration)
+		.attr('transform', function() { return 'translate(' + source.y + ',' + source.x + ')'; })
+		.remove();
+
+	nodeExit.select('rect')
+		.attr('width', 1e-6)
+		.attr('height', 1e-6);
+
+	nodeExit.select('text')
+		.style('fill-opacity', 1e-6);
+
+	var link = svg.selectAll('path.link')
+		.data(links, function(d) { return d.target.id; });
+
+	link.enter()
+		.insert('path', 'g')
+		.attr('class', 'link')
+		.attr('d', function() {
+			var origin = {x: source.x0, y: source.y0};
+			return diagonal({source: origin, target: origin});
+		});
+
+	link.transition()
+		.duration(duration)
+		.attr('d', diagonal);
+
+	link.exit().transition()
+		.duration(duration)
+		.attr('d', function() {
+			var origin = {x: source.x, y: source.y};
+			return diagonal({source: origin, target: origin});
+		})
+		.remove();
+
+	nodes.forEach(function(d) {
+		d.x0 = d.x;
+		d.y0 = d.y;
+	});
+}
+
+function click(d) {
+	if (d.children) {
+		d._children = d.children;
+		d.children = null;
+	} else {
+		d.children = d._children;
+		d._children = null;
+	}
+
+	update(d);
+}
+
+d3.json('json/osdtree.php', function(error, data) {
+	if (error) {
+		setMessage('Unable to load the Ceph OSD tree.');
+		return;
+	}
+
+	if (data.ok === false) {
+		setMessage(data.error || 'Unable to load the Ceph OSD tree.');
+		return;
+	}
+
+	renderTree(data);
+
+	window.addEventListener('resize', function() {
+		window.clearTimeout(resizeTimer);
+		resizeTimer = window.setTimeout(function() {
+			renderTree(data);
+		}, 120);
+	});
+});
+</script>
+</body>
+</html>

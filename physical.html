@@ -156,7 +156,7 @@ function renderTree(data) {
 	var viewportHeight = Math.max(window.innerHeight || 0, 420);
 	var viewportWidth = Math.max(document.documentElement.clientWidth || 0, 360);
 	var width = Math.max(220, viewportWidth - margin.left - margin.right - 12);
-	var height = Math.max(viewportHeight - margin.top - margin.bottom - 24, nodeCount * 26, 420);
+	var height = Math.max(viewportHeight - margin.top - margin.bottom - 24, nodeCount * 24, 420);
 
 	tree.size([height, width]);
 
@@ -182,9 +182,10 @@ function renderTree(data) {
 function update(source) {
 	var nodes = tree.nodes(root).reverse();
 	var links = tree.links(nodes);
+	var depthSpacing = Math.max(130, Math.min(180, Math.round((window.innerWidth || 960) * 0.12)));
 
 	nodes.forEach(function(d) {
-		d.y = d.depth * 180;
+		d.y = d.depth * depthSpacing;
 	});
 
 	var node = svg.selectAll('g.node')

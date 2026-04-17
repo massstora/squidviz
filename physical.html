@@ -152,7 +152,11 @@ function countNodes(node) {
 function renderTree(data) {
 	document.getElementById('message').style.display = 'none';
 
-	var nodeCount = countNodes(data);
+	var treeData = JSON.parse(JSON.stringify(data));
+	markHealth(treeData);
+	applyDefaultCollapse(treeData, 0);
+
+	var nodeCount = countNodes(treeData);
 	var viewportHeight = Math.max(window.innerHeight || 0, 420);
 	var viewportWidth = Math.max(document.documentElement.clientWidth || 0, 360);
 	var width = Math.max(220, viewportWidth - margin.left - margin.right - 12);
@@ -169,9 +173,7 @@ function renderTree(data) {
 		.append('g')
 		.attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
 
-	root = data;
-	markHealth(root);
-	applyDefaultCollapse(root, 0);
+	root = treeData;
 	root.x0 = height / 2;
 	root.y0 = 0;
 

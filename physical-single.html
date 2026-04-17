@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SquidViz | CRUSH Failure Domains</title>
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+	background: #eef3f5;
+	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+	color: #21343d;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+.page {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	padding: 8px;
+	gap: 8px;
+}
+
+.topbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 10px;
+	border: 1px solid rgba(69, 90, 100, 0.12);
+	border-radius: 14px;
+	background: rgba(255, 255, 255, 0.84);
+	box-shadow: 0 6px 18px rgba(37, 56, 64, 0.06);
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.brand h1 {
+	margin: 0;
+	font-size: 0.95rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.brand p {
+	margin: 1px 0 0;
+	font-size: 0.72rem;
+	color: #58707a;
+}
+
+.toolbar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.toggle,
+.button {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: 999px;
+	border: 1px solid rgba(12, 154, 176, 0.18);
+	background: #ffffff;
+	color: #21343d;
+	font: inherit;
+	font-size: 0.78rem;
+}
+
+.button {
+	cursor: pointer;
+}
+
+.button--accent {
+	background: #f05c56;
+	border-color: transparent;
+	color: #ffffff;
+}
+
+.toggle select,
+.toggle input {
+	font: inherit;
+}
+
+.frame-wrap {
+	flex: 1;
+	min-height: 0;
+	border: 1px solid rgba(69, 90, 100, 0.18);
+	border-radius: 16px;
+	overflow: hidden;
+	background: #ffffff;
+	box-shadow: 0 16px 34px rgba(37, 56, 64, 0.1);
+}
+
+iframe {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 0;
+}
+
+@media (max-width: 720px) {
+	.topbar {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+}
+</style>
+<script>
+var refreshTimer = null;
+
+function buildSrc() {
+	var depth = document.getElementById('physical-depth').value;
+	return 'physical.html?depth=' + encodeURIComponent(depth);
+}
+
+function reloadFrame() {
+	var frame = document.getElementById('physical-frame');
+	frame.src = buildSrc();
+}
+
+function scheduleRefresh() {
+	window.clearTimeout(refreshTimer);
+
+	if (!document.getElementById('auto-refresh').checked) {
+		return;
+	}
+
+	refreshTimer = window.setTimeout(function() {
+		reloadFrame();
+		scheduleRefresh();
+	}, 60000);
+}
+
+window.addEventListener('DOMContentLoaded', function() {
+	document.getElementById('physical-depth').addEventListener('change', function() {
+		reloadFrame();
+		scheduleRefresh();
+	});
+
+	document.getElementById('refresh-button').addEventListener('click', function() {
+		reloadFrame();
+		scheduleRefresh();
+	});
+
+	document.getElementById('auto-refresh').addEventListener('change', function() {
+		scheduleRefresh();
+	});
+
+	reloadFrame();
+	scheduleRefresh();
+});
+</script>
+</head>
+<body>
+	<div class="page">
+		<header class="topbar">
+			<div class="brand">
+				<div>
+					<h1>CRUSH Failure Domains</h1>
+					<p>Single-pane wallboard view</p>
+				</div>
+			</div>
+			<div class="toolbar">
+				<label class="toggle" for="physical-depth">
+					<span>Depth</span>
+					<select id="physical-depth" name="physical-depth">
+						<option value="1">1</option>
+						<option value="2">2</option>
+						<option value="3">3</option>
+						<option value="4">4</option>
+						<option value="99" selected>All</option>
+					</select>
+				</label>
+				<label class="toggle" for="auto-refresh">
+					<input type="checkbox" id="auto-refresh" name="auto-refresh" checked>
+					<span>Auto Refresh</span>
+				</label>
+				<button class="button button--accent" id="refresh-button" type="button">Refresh</button>
+			</div>
+		</header>
+		<div class="frame-wrap">
+			<iframe id="physical-frame" title="CRUSH failure domain view"></iframe>
+		</div>
+	</div>
+</body>
+</html>

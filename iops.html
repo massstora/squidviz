@@ -102,6 +102,27 @@ svg {
 	stroke-linecap: round;
 }
 
+.latency-box {
+	display: inline-flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 2px;
+	padding: 6px 10px;
+	border-radius: 14px;
+	background: rgba(36, 59, 69, 0.06);
+	color: #243b45;
+	font: 11px/1.2 "Trebuchet MS", "Segoe UI", sans-serif;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.latency-value {
+	font-size: 12px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	text-transform: none;
+}
+
 .message {
 	padding: 24px;
 	color: #58707a;
@@ -127,6 +148,14 @@ svg {
 			<option value="lines">Multi-Line</option>
 			<option value="bars">Read/Write Bars</option>
 		</select>
+	</div>
+	<label class="control-group" for="latency-toggle">
+		<input type="checkbox" id="latency-toggle" name="latency-toggle">
+		<span>Latency</span>
+	</label>
+	<div class="latency-box" id="latency-box">
+		<div>Avg OSD Latency</div>
+		<div class="latency-value" id="latency-value">--</div>
 	</div>
 </div>
 <div class="message" id="message">Loading IOPS history...</div>
@@ -166,6 +195,8 @@ var currentTotalOps = 0;
 var currentMode = 'layered';
 var plot;
 var barWidth = 0;
+var currentLatencyLabel = '--';
+var latencyEnabled = false;
 
 function setMessage(text) {
 	document.getElementById('message').textContent = text;
@@ -174,6 +205,35 @@ function setMessage(text) {
 function showChart() {
 	document.getElementById('message').style.display = 'none';
 	d3.select('svg').style('display', 'block');
+}
+
+function updateLatencyVisibility() {
+	document.getElementById('latency-box').style.display = latencyEnabled ? 'inline-flex' : 'none';
+}
+
+function updateLatency(commitLatency, applyLatency) {
+	var label = '--';
+
+	if (typeof commitLatency === 'number' || typeof applyLatency === 'number') {
+		var parts = [];
+
+		if (typeof commitLatency === 'number') {
+			parts.push('commit ' + commitLatency.toFixed(1) + 'ms');
+		}
+
+		if (typeof applyLatency === 'number') {
+			parts.push('apply ' + applyLatency.toFixed(1) + 'ms');
+		}
+
+		label = parts.join(' / ');
+	}
+
+	currentLatencyLabel = label;
+	document.getElementById('latency-value').textContent = label;
+}
+
+function iopsEndpointUrl() {
+	return latencyEnabled ? 'json/iops.php?latency=1' : 'json/iops.php';
 }
 
 function getDimensions() {
@@ -419,7 +479,7 @@ function updateVisualMode(animate) {
 }
 
 function tick() {
-	d3.json('json/iops.php', function(error, result) {
+	d3.json(iopsEndpointUrl(), function(error, result) {
 		if (error) {
 			setMessage('Unable to load IOPS data.');
 			window.setTimeout(tick, 5000);
@@ -440,6 +500,9 @@ function tick() {
 		currentReadOps = readOps;
 		currentWriteOps = writeOps;
 		currentTotalOps = totalOps;
+		if (latencyEnabled) {
+			updateLatency(result.commit_latency_ms, result.apply_latency_ms);
+		}
 		readData.push(readOps);
 		readData.shift();
 		writeData.push(writeOps);
@@ -457,6 +520,12 @@ function tick() {
 }
 
 renderBase();
+document.getElementById('latency-toggle').addEventListener('change', function(event) {
+	latencyEnabled = event.target.checked;
+	currentLatencyLabel = '--';
+	document.getElementById('latency-value').textContent = currentLatencyLabel;
+	updateLatencyVisibility();
+});
 document.getElementById('viz-mode').addEventListener('change', function(event) {
 	currentMode = event.target.value;
 	renderBase();
@@ -464,6 +533,7 @@ document.getElementById('viz-mode').addEventListener('change', function(event) {
 	totalLabel.text('Total ' + Math.round(currentTotalOps));
 	readLabel.text('Read ' + Math.round(currentReadOps));
 	writeLabel.text('Write ' + Math.round(currentWriteOps));
+	document.getElementById('latency-value').textContent = currentLatencyLabel;
 	showChart();
 });
 window.addEventListener('resize', function() {
@@ -474,9 +544,11 @@ window.addEventListener('resize', function() {
 		totalLabel.text('Total ' + Math.round(currentTotalOps));
 		readLabel.text('Read ' + Math.round(currentReadOps));
 		writeLabel.text('Write ' + Math.round(currentWriteOps));
+		document.getElementById('latency-value').textContent = currentLatencyLabel;
 		showChart();
 	}, 120);
 });
+updateLatencyVisibility();
 tick();
 </script>
 </body>

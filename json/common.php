@@ -138,6 +138,37 @@ function value_or($value, $fallback) {
 	return isset($value) ? $value : $fallback;
 }
 
+function ceph_json_command_optional($arguments) {
+	$command = ceph_command_prefix($arguments);
+	$descriptors = array(
+		0 => array("pipe", "r"),
+		1 => array("pipe", "w"),
+		2 => array("pipe", "w"),
+	);
+
+	$process = @proc_open($command, $descriptors, $pipes);
+	if (!is_resource($process)) {
+		return null;
+	}
+
+	fclose($pipes[0]);
+	$stdout = stream_get_contents($pipes[1]);
+	fclose($pipes[1]);
+	fclose($pipes[2]);
+
+	$exit_code = proc_close($process);
+	if ($exit_code !== 0) {
+		return null;
+	}
+
+	$data = json_decode($stdout);
+	if (json_last_error() !== JSON_ERROR_NONE) {
+		return null;
+	}
+
+	return $data;
+}
+
 function ceph_command_prefix($arguments) {
 	global $squidviz_config;
 

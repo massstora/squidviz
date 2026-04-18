@@ -2,21 +2,25 @@
 
 require_once __DIR__ . '/common.php';
 
-$status = ceph_json_command(array("-s", "-f", "json"));
+$tree = ceph_json_command(array("osd", "tree", "--format=json"));
 
-$osdmap = value_or($status->osdmap, (object) array());
-$version = value_or($osdmap->epoch, null);
+$nodes = value_or($tree->nodes, array());
+$summary = array();
 
-if ($version === null) {
-	$summary = array(
-		"num_osds" => value_or($osdmap->num_osds, 0),
-		"num_up_osds" => value_or($osdmap->num_up_osds, 0),
-		"num_in_osds" => value_or($osdmap->num_in_osds, 0),
-		"num_remapped_pgs" => value_or($osdmap->num_remapped_pgs, 0),
-	);
-
-	$version = sha1(json_encode($summary));
+if (is_array($nodes) || is_object($nodes)) {
+	foreach ($nodes as $node) {
+		$summary[] = array(
+			"id" => value_or($node->id, null),
+			"name" => value_or($node->name, ""),
+			"type" => value_or($node->type, ""),
+			"status" => value_or($node->status, ""),
+			"reweight" => value_or($node->reweight, null),
+			"children" => value_or($node->children, array()),
+		);
+	}
 }
+
+$version = sha1(json_encode($summary));
 
 respond_json(array(
 	"ok" => true,

@@ -363,6 +363,7 @@ body.theme-dark .legend {
 </style>
 <script>
 var osdVersion = null;
+var refreshTimer = null;
 
 function updateStatus(message, healthy) {
 	var $text = $('#refresh-status-text');
@@ -400,7 +401,6 @@ function applyTheme(isDark) {
 
 function pollOsdState() {
 	if (!$('#show-physical').is(':checked')) {
-		window.setTimeout(pollOsdState, 10000);
 		return;
 	}
 
@@ -423,9 +423,29 @@ function pollOsdState() {
 			osdVersion = data.osdmap;
 			postFrameMessage('#osdtree', {type: 'refresh'});
 		}
-	}).always(function() {
-		window.setTimeout(pollOsdState, 10000);
 	});
+}
+
+function refreshIntervalMs() {
+	return parseInt($('#refresh-interval').val(), 10) * 1000;
+}
+
+function scheduleRefreshTick() {
+	window.clearTimeout(refreshTimer);
+	refreshTimer = window.setTimeout(refreshTick, refreshIntervalMs());
+}
+
+function refreshTick() {
+	if ($('#upd-logical').is(':checked')) {
+		postFrameMessage('#pgmap', {type: 'tick'});
+	}
+
+	pollOsdState();
+	scheduleRefreshTick();
+}
+
+function currentThemeName() {
+	return $('body').hasClass('theme-dark') ? 'dark' : 'light';
 }
 
 $(function() {
@@ -436,6 +456,23 @@ $(function() {
 
 	$('#upd-physical').on('click', function() {
 		postFrameMessage('#osdtree', {type: 'refresh'});
+	});
+
+	$('#osdtree').on('load', function() {
+		updatePhysicalFrameDepth();
+	});
+
+	$('#pgmap').on('load', function() {
+		postFrameMessage('#pgmap', {type: 'theme', theme: currentThemeName()});
+		postFrameMessage('#pgmap', {
+			type: 'auto',
+			enabled: $('#upd-logical').is(':checked')
+		});
+		postFrameMessage('#pgmap', {type: 'tick'});
+	});
+
+	$('#iopsgraph').on('load', function() {
+		postFrameMessage('#iopsgraph', {type: 'theme', theme: currentThemeName()});
 	});
 
 	$('#physical-depth').on('change', function() {
@@ -458,6 +495,10 @@ $(function() {
 		});
 	});
 
+	$('#refresh-interval').on('change', function() {
+		scheduleRefreshTick();
+	});
+
 	window.addEventListener('message', function(event) {
 		var data = event.data || {};
 		if (data.type === 'logical-status') {
@@ -472,7 +513,9 @@ $(function() {
 
 	updateStatus('Starting refresh loop', true);
 	updatePhysicalFrameDepth();
-	window.setTimeout(pollOsdState, 1500);
+	postFrameMessage('#pgmap', {type: 'tick'});
+	pollOsdState();
+	scheduleRefreshTick();
 });
 </script>
 </head>
@@ -506,6 +549,17 @@ $(function() {
 					<label class="toggle" for="upd-logical">
 						<input type="checkbox" id="upd-logical" name="upd-logical" checked>
 						<span>Auto</span>
+					</label>
+					<label class="toggle" for="refresh-interval">
+						<span>Refresh</span>
+						<select id="refresh-interval" name="refresh-interval">
+							<option value="8" selected>8s</option>
+							<option value="10">10s</option>
+							<option value="12">12s</option>
+							<option value="14">14s</option>
+							<option value="18">18s</option>
+							<option value="20">20s</option>
+						</select>
 					</label>
 					<label class="toggle" for="dark-mode">
 						<input type="checkbox" id="dark-mode" name="dark-mode">

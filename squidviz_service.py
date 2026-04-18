@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Standalone SquidViz backend microservice.
- usage:python3 squidviz_service.py --host 127.0.0.1 --port 8081
+
 This service mirrors the current PHP JSON endpoints so the frontend can be
 moved off PHP later without rewriting the data-gathering logic again.
 
@@ -14,6 +14,12 @@ Exposed endpoints:
 
 Run example:
   python3 squidviz_service.py --host 127.0.0.1 --port 8081
+
+Remote test example:
+  python3 squidviz_service.py --host 0.0.0.0 --port 8081 --cors-origin "*"
+
+Remote locked-down example:
+  python3 squidviz_service.py --host 0.0.0.0 --port 8081 --cors-origin "http://squidviz.example.com"
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 
@@ -119,7 +125,7 @@ def set_cached_payload(cache_key: str, payload: dict[str, Any], ttl: float) -> d
     return payload
 
 
-def cached_endpoint(name: str, key_suffix: str, factory: callable) -> dict[str, Any]:
+def cached_endpoint(name: str, key_suffix: str, factory: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     cache_key = f"{name}:{key_suffix}"
     cached = get_cached_payload(cache_key)
     if cached is not None:
@@ -424,7 +430,7 @@ class SquidVizHandler(BaseHTTPRequestHandler):
     server_version = "SquidVizService/0.1"
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self.server.cors_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         super().end_headers()
@@ -480,10 +486,25 @@ class SquidVizHandler(BaseHTTPRequestHandler):
         LOG.info("%s - %s", self.address_string(), format % args)
 
 
+class SquidVizServer(ThreadingHTTPServer):
+    def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler], cors_origin: str):
+        super().__init__(server_address, handler_class)
+        self.cors_origin = cors_origin
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the SquidViz backend microservice.")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address. Default: 127.0.0.1")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address. Use 0.0.0.0 to listen remotely. Default: 127.0.0.1",
+    )
     parser.add_argument("--port", type=int, default=8081, help="Bind port. Default: 8081")
+    parser.add_argument(
+        "--cors-origin",
+        default="*",
+        help='Allowed browser origin for cross-host requests. Default: "*"',
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -502,8 +523,9 @@ def main() -> None:
         LOG.info("Using Ceph client: %s", CONFIG.ceph_name)
     if CONFIG.ceph_keyring:
         LOG.info("Using Ceph keyring: %s", CONFIG.ceph_keyring)
+    LOG.info("Using CORS origin: %s", args.cors_origin)
 
-    server = ThreadingHTTPServer((args.host, args.port), SquidVizHandler)
+    server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

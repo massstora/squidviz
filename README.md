@@ -153,3 +153,7 @@ If that fails, fix Ceph config or auth first. The dashboard can only be as healt
 
 - This project intentionally remains simple: no build step, no package manager, no frontend framework.
 - The single-page wrappers `logical-single.html` and `iops-single.html` are convenience embeds for wallboard-style displays.
+
+## Upcoming Python Data Source
+
+SquidViz currently uses PHP endpoints to collect Ceph data, but I am working on a Python-based data service that can provide the same JSON output without requiring PHP on the web server. The goal is to keep SquidViz simple to deploy while eventually allowing the Ceph-facing data collector to run as a small standalone Python process, either on the web server or on a separate internal host with Ceph access.

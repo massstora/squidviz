@@ -68,8 +68,7 @@ var currentRoot = null;
 var currentChart = null;
 var pgVersion = null;
 var autoRefresh = true;
-var pollTimer = null;
-var pollInterval = 8000;
+var pollInFlight = false;
 
 if (currentTheme === 'dark') {
 	document.documentElement.style.background = '#111c22';
@@ -359,24 +358,23 @@ function loadPgDump(version) {
 	});
 }
 
-function pollPgState() {
-	window.clearTimeout(pollTimer);
-
-	if (!autoRefresh) {
+function pollPgState(force) {
+	if (!autoRefresh || pollInFlight) {
 		return;
 	}
 
+	pollInFlight = true;
 	d3.json('json/pgmap.php', function(error, data) {
+		pollInFlight = false;
+
 		if (error || !data || data.ok === false) {
 			setMessage('Unable to query PG state.');
 			notifyParent('Logical refresh check failed', false);
-			pollTimer = window.setTimeout(pollPgState, pollInterval);
 			return;
 		}
 
-		if (pgVersion === data.pgmap) {
+		if (!force && pgVersion === data.pgmap) {
 			notifyParent('No PG changes detected', true);
-			pollTimer = window.setTimeout(pollPgState, pollInterval);
 			return;
 		}
 
@@ -388,8 +386,6 @@ function pollPgState() {
 			setMessage('All PGs are active+clean' + (data.pgmap ? ' (v' + data.pgmap + ')' : '') + '.');
 			notifyParent('All PGs active+clean', true);
 		}
-
-		pollTimer = window.setTimeout(pollPgState, pollInterval);
 	});
 }
 
@@ -411,20 +407,21 @@ window.addEventListener('message', function(event) {
 
 	if (data.type === 'auto') {
 		autoRefresh = data.enabled !== false;
-		if (autoRefresh) {
-			pollPgState();
-		}
 	}
 
 	if (data.type === 'refresh') {
 		pgVersion = null;
-		pollPgState();
+		pollPgState(true);
+	}
+
+	if (data.type === 'tick') {
+		pollPgState(false);
 	}
 });
 
 applyTheme(currentTheme);
 showSummaryState();
-pollPgState();
+pollPgState(true);
 </script>
 </body>
 </html>

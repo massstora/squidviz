@@ -25,6 +25,8 @@ import logging
 import os
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,6 +74,17 @@ def load_config() -> CephConfig:
 
 CONFIG = load_config()
 
+ENDPOINT_TTLS = {
+    "osdtree": 10.0,
+    "pgmap": 10.0,
+    "osdmap": 10.0,
+    "pgdump": 10.0,
+    "iops": 2.0,
+}
+
+_CACHE_LOCK = threading.Lock()
+_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
 
 def json_response(payload: dict[str, Any], status_code: int = 200) -> tuple[int, bytes]:
     return status_code, json.dumps(payload).encode("utf-8")
@@ -82,6 +95,38 @@ def error_response(message: str, details: dict[str, Any] | None = None, status_c
     if details:
         payload["details"] = details
     return json_response(payload, status_code)
+
+
+def get_cached_payload(cache_key: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _CACHE.get(cache_key)
+        if entry is None:
+            return None
+
+        expires_at, payload = entry
+        if now >= expires_at:
+            _CACHE.pop(cache_key, None)
+            return None
+
+        return payload
+
+
+def set_cached_payload(cache_key: str, payload: dict[str, Any], ttl: float) -> dict[str, Any]:
+    expires_at = time.monotonic() + ttl
+    with _CACHE_LOCK:
+        _CACHE[cache_key] = (expires_at, payload)
+    return payload
+
+
+def cached_endpoint(name: str, key_suffix: str, factory: callable) -> dict[str, Any]:
+    cache_key = f"{name}:{key_suffix}"
+    cached = get_cached_payload(cache_key)
+    if cached is not None:
+        return cached
+
+    payload = factory()
+    return set_cached_payload(cache_key, payload, ENDPOINT_TTLS[name])
 
 
 def ceph_command_prefix(arguments: list[str]) -> list[str]:
@@ -391,20 +436,32 @@ class SquidVizHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        route = parsed.path
 
         try:
-            if parsed.path == "/healthz":
+            if route == "/healthz":
                 status_code, payload = json_response({"ok": True, "service": "squidviz"})
-            elif parsed.path == "/json/osdtree":
-                status_code, payload = json_response(get_osdtree_payload())
-            elif parsed.path == "/json/pgmap":
-                status_code, payload = json_response(get_pgmap_payload())
-            elif parsed.path == "/json/osdmap":
-                status_code, payload = json_response(get_osdmap_payload())
-            elif parsed.path == "/json/pgdump":
-                status_code, payload = json_response(get_pgdump_payload())
-            elif parsed.path == "/json/iops":
-                status_code, payload = json_response(get_iops_payload(query))
+            elif route == "/json/osdtree":
+                status_code, payload = json_response(
+                    cached_endpoint("osdtree", "default", get_osdtree_payload)
+                )
+            elif route == "/json/pgmap":
+                status_code, payload = json_response(
+                    cached_endpoint("pgmap", "default", get_pgmap_payload)
+                )
+            elif route == "/json/osdmap":
+                status_code, payload = json_response(
+                    cached_endpoint("osdmap", "default", get_osdmap_payload)
+                )
+            elif route == "/json/pgdump":
+                status_code, payload = json_response(
+                    cached_endpoint("pgdump", "default", get_pgdump_payload)
+                )
+            elif route == "/json/iops":
+                latency_flag = query.get("latency", ["0"])[0]
+                status_code, payload = json_response(
+                    cached_endpoint("iops", f"latency={latency_flag}", lambda: get_iops_payload(query))
+                )
             else:
                 status_code, payload = error_response("Not found.", status_code=404)
         except CephCommandError as exc:

@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SquidViz | Ceph Visualizer</title>
 <script src="jquery.min.js"></script>
+<script>
+if (window.localStorage.getItem('squidviz-theme') === 'dark') {
+	document.documentElement.classList.add('theme-dark-boot');
+}
+</script>
 <style>
 :root {
 	--page-bg: linear-gradient(180deg, #eef3f5 0%, #d7e3e6 100%);
@@ -30,6 +35,11 @@ body.theme-dark {
 	--accent-strong: #ff7868;
 	--success: #31c772;
 	--surface: #111c22;
+}
+
+html.theme-dark-boot,
+html.theme-dark-boot body {
+	background: #0f1a20;
 }
 
 * {
@@ -268,6 +278,10 @@ body.theme-dark .status {
 	display: block;
 }
 
+body.theme-dark .frame {
+	background: #111c22;
+}
+
 .frame--logical {
 	height: 100%;
 	min-height: 0;
@@ -348,9 +362,7 @@ body.theme-dark .legend {
 }
 </style>
 <script>
-var pgVersion = null;
 var osdVersion = null;
-var logicalFrameKey = null;
 
 function updateStatus(message, healthy) {
 	var $text = $('#refresh-status-text');
@@ -360,48 +372,30 @@ function updateStatus(message, healthy) {
 	$dot.css('box-shadow', healthy ? '0 0 0 4px rgba(15, 157, 88, 0.15)' : '0 0 0 4px rgba(240, 92, 86, 0.16)');
 }
 
-function reloadFrame(selector) {
-	var $frame = $(selector);
-	$frame.attr('src', $frame.attr('src'));
-}
-
-function setLogicalFrame(data) {
-	var src;
-	var theme = $('body').hasClass('theme-dark') ? 'dark' : 'light';
-
-	if (data.has_unhealthy) {
-		src = 'logical.html?state=detail&version=' + encodeURIComponent(data.pgmap) + '&theme=' + encodeURIComponent(theme);
-	} else {
-		src = 'logical.html?state=clean&version=' + encodeURIComponent(data.pgmap) + '&theme=' + encodeURIComponent(theme);
+function postFrameMessage(selector, message) {
+	var frame = $(selector).get(0);
+	if (frame && frame.contentWindow) {
+		frame.contentWindow.postMessage(message, '*');
 	}
-
-	if (logicalFrameKey === src) {
-		return;
-	}
-
-	logicalFrameKey = src;
-	$('#pgmap').attr('src', src);
 }
 
 function updatePhysicalFrameDepth() {
 	var depth = $('#physical-depth').val();
 	var theme = $('body').hasClass('theme-dark') ? 'dark' : 'light';
-	$('#osdtree').attr('src', 'physical.html?depth=' + encodeURIComponent(depth) + '&theme=' + encodeURIComponent(theme));
+	postFrameMessage('#osdtree', {
+		type: 'config',
+		depth: depth,
+		theme: theme
+	});
 }
 
 function applyTheme(isDark) {
 	$('body').toggleClass('theme-dark', isDark);
 	window.localStorage.setItem('squidviz-theme', isDark ? 'dark' : 'light');
+	var theme = isDark ? 'dark' : 'light';
 	updatePhysicalFrameDepth();
-	if (pgVersion !== null) {
-		setLogicalFrame({
-			has_unhealthy: logicalFrameKey !== null && logicalFrameKey.indexOf('state=detail') !== -1,
-			pgmap: pgVersion
-		});
-	} else {
-		$('#pgmap').attr('src', 'logical.html?state=loading&theme=' + encodeURIComponent(isDark ? 'dark' : 'light'));
-	}
-	$('#iopsgraph').attr('src', 'iops.html?theme=' + encodeURIComponent(isDark ? 'dark' : 'light'));
+	postFrameMessage('#pgmap', {type: 'theme', theme: theme});
+	postFrameMessage('#iopsgraph', {type: 'theme', theme: theme});
 }
 
 function pollOsdState() {
@@ -427,49 +421,10 @@ function pollOsdState() {
 
 		if (data.osdmap !== osdVersion) {
 			osdVersion = data.osdmap;
-			reloadFrame('#osdtree');
+			postFrameMessage('#osdtree', {type: 'refresh'});
 		}
 	}).always(function() {
 		window.setTimeout(pollOsdState, 10000);
-	});
-}
-
-function pollPgState() {
-	if (!$('#upd-logical').is(':checked')) {
-		window.setTimeout(pollPgState, 10000);
-		return;
-	}
-
-	$.ajax({
-		url: 'json/pgmap.php',
-		type: 'GET',
-		dataType: 'json',
-		cache: false
-	}).done(function(data) {
-		if (!data.ok) {
-			updateStatus('Logical refresh check failed', false);
-			return;
-		}
-
-		if (pgVersion === null) {
-			pgVersion = data.pgmap;
-			setLogicalFrame(data);
-			updateStatus('Watching Ceph for PG changes', true);
-			return;
-		}
-
-		if (data.pgmap !== pgVersion) {
-			pgVersion = data.pgmap;
-			setLogicalFrame(data);
-			updateStatus('PG state changed, refreshing logical view', true);
-			return;
-		}
-
-		updateStatus('No PG changes detected', true);
-	}).fail(function() {
-		updateStatus('Unable to query Ceph refresh state', false);
-	}).always(function() {
-		window.setTimeout(pollPgState, 10000);
 	});
 }
 
@@ -480,7 +435,7 @@ $(function() {
 	applyTheme(darkMode);
 
 	$('#upd-physical').on('click', function() {
-		reloadFrame('#osdtree');
+		postFrameMessage('#osdtree', {type: 'refresh'});
 	});
 
 	$('#physical-depth').on('change', function() {
@@ -496,6 +451,20 @@ $(function() {
 		applyTheme($(this).is(':checked'));
 	});
 
+	$('#upd-logical').on('change', function() {
+		postFrameMessage('#pgmap', {
+			type: 'auto',
+			enabled: $(this).is(':checked')
+		});
+	});
+
+	window.addEventListener('message', function(event) {
+		var data = event.data || {};
+		if (data.type === 'logical-status') {
+			updateStatus(data.message || 'Logical view updated', data.ok !== false);
+		}
+	});
+
 	$('#toggle-legend').on('click', function(event) {
 		event.preventDefault();
 		$('#legend').slideToggle(250);
@@ -503,7 +472,6 @@ $(function() {
 
 	updateStatus('Starting refresh loop', true);
 	updatePhysicalFrameDepth();
-	window.setTimeout(pollPgState, 1000);
 	window.setTimeout(pollOsdState, 1500);
 });
 </script>
@@ -561,7 +529,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?state=loading&theme=light"></iframe>
+					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?theme=light"></iframe>
 				</div>
 				<div class="legend" id="legend">
 					<ul class="legend-list">

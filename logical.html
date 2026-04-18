@@ -3,12 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+if (window.location.search.indexOf('theme=dark') !== -1) {
+	document.documentElement.classList.add('theme-dark-boot');
+	document.documentElement.style.backgroundColor = '#111c22';
+}
+</script>
 <style>
 html, body {
 	margin: 0;
 	padding: 0;
 	background: #ffffff;
 	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+html.theme-dark-boot,
+html.theme-dark-boot body {
+	background: #111c22;
 }
 
 path {
@@ -35,6 +46,11 @@ text {
 </style>
 </head>
 <body>
+<script>
+if (window.location.search.indexOf('theme=dark') !== -1) {
+	document.body.style.backgroundColor = '#111c22';
+}
+</script>
 <div class="message" id="message">Loading PG map...</div>
 <script src="d3.v3.min.js"></script>
 <script>
@@ -42,7 +58,7 @@ var query = window.location.search || '';
 var stateMatch = query.match(/(?:\?|&)state=([^&]+)/);
 var versionMatch = query.match(/(?:\?|&)version=([^&]+)/);
 var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
-var requestedState = stateMatch ? decodeURIComponent(stateMatch[1]) : 'detail';
+var requestedState = stateMatch ? decodeURIComponent(stateMatch[1]) : 'loading';
 var requestedVersion = versionMatch ? decodeURIComponent(versionMatch[1]) : '';
 var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 var color = d3.scale.category20c();
@@ -50,13 +66,33 @@ var partition = d3.layout.partition().value(function() { return 1; });
 var resizeTimer = null;
 var currentRoot = null;
 var currentChart = null;
+var pgVersion = null;
+var autoRefresh = true;
+var pollTimer = null;
 
 if (currentTheme === 'dark') {
 	document.documentElement.style.background = '#111c22';
 	document.body.style.background = '#111c22';
 }
 
+function applyTheme(theme) {
+	currentTheme = theme === 'dark' ? 'dark' : 'light';
+	document.documentElement.classList.toggle('theme-dark-boot', currentTheme === 'dark');
+	document.documentElement.style.background = currentTheme === 'dark' ? '#111c22' : '#ffffff';
+	document.body.style.background = currentTheme === 'dark' ? '#111c22' : '#ffffff';
+	document.getElementById('message').style.color = currentTheme === 'dark' ? '#dce8ed' : '#58707a';
+
+	if (currentRoot) {
+		renderChart(currentRoot);
+	}
+}
+
 function setMessage(text) {
+	d3.select('svg').remove();
+	currentRoot = null;
+	currentChart = null;
+	document.getElementById('message').style.display = 'block';
+	document.getElementById('message').style.color = currentTheme === 'dark' ? '#dce8ed' : '#58707a';
 	document.getElementById('message').textContent = text;
 }
 
@@ -80,6 +116,16 @@ function showSummaryState() {
 	}
 
 	return false;
+}
+
+function notifyParent(message, ok) {
+	if (window.parent && window.parent !== window) {
+		window.parent.postMessage({
+			type: 'logical-status',
+			message: message,
+			ok: ok
+		}, '*');
+	}
 }
 
 function stateColor(state) {
@@ -287,35 +333,97 @@ function renderChart(root) {
 	d3.select(self.frameElement).style('height', (dimensions.height + 24) + 'px');
 }
 
-if (showSummaryState()) {
-	// No heavy PG dump is needed for summary-only states.
-} else d3.json('json/pgdump.php', function(error, root) {
-	if (error) {
-		setMessage('Unable to load the PG map.');
-		return;
-	}
+function loadPgDump(version) {
+	d3.json('json/pgdump.php', function(error, root) {
+		if (error) {
+			setMessage('Unable to load the PG map.');
+			notifyParent('Logical PG dump failed', false);
+			return;
+		}
 
-	if (root.ok === false) {
-		setMessage(root.error || 'Unable to load the PG map.');
-		return;
-	}
+		if (root.ok === false) {
+			setMessage(root.error || 'Unable to load the PG map.');
+			notifyParent('Logical PG dump failed', false);
+			return;
+		}
 
-	if (!root.children || root.children.length === 0) {
-		setMessage('No unhealthy PGs to display. The cluster looks clean.');
-		return;
-	}
+		if (!root.children || root.children.length === 0) {
+			setMessage('No unhealthy PGs to display. The cluster looks clean.');
+			notifyParent('No unhealthy PGs detected', true);
+			return;
+		}
 
-	renderChart(root);
-
-	window.addEventListener('resize', function() {
-		window.clearTimeout(resizeTimer);
-		resizeTimer = window.setTimeout(function() {
-			if (currentRoot) {
-				renderChart(currentRoot);
-			}
-		}, 120);
+		renderChart(root);
+		notifyParent('Showing unhealthy PGs' + (version ? ' (v' + version + ')' : ''), true);
 	});
+}
+
+function pollPgState() {
+	window.clearTimeout(pollTimer);
+
+	if (!autoRefresh) {
+		return;
+	}
+
+	d3.json('json/pgmap.php', function(error, data) {
+		if (error || !data || data.ok === false) {
+			setMessage('Unable to query PG state.');
+			notifyParent('Logical refresh check failed', false);
+			pollTimer = window.setTimeout(pollPgState, 10000);
+			return;
+		}
+
+		if (pgVersion === data.pgmap) {
+			notifyParent('No PG changes detected', true);
+			pollTimer = window.setTimeout(pollPgState, 10000);
+			return;
+		}
+
+		pgVersion = data.pgmap;
+
+		if (data.has_unhealthy) {
+			loadPgDump(data.pgmap);
+		} else {
+			setMessage('All PGs are active+clean' + (data.pgmap ? ' (v' + data.pgmap + ')' : '') + '.');
+			notifyParent('All PGs active+clean', true);
+		}
+
+		pollTimer = window.setTimeout(pollPgState, 10000);
+	});
+}
+
+window.addEventListener('resize', function() {
+	window.clearTimeout(resizeTimer);
+	resizeTimer = window.setTimeout(function() {
+		if (currentRoot) {
+			renderChart(currentRoot);
+		}
+	}, 120);
 });
+
+window.addEventListener('message', function(event) {
+	var data = event.data || {};
+
+	if (data.type === 'theme') {
+		applyTheme(data.theme);
+	}
+
+	if (data.type === 'auto') {
+		autoRefresh = data.enabled !== false;
+		if (autoRefresh) {
+			pollPgState();
+		}
+	}
+
+	if (data.type === 'refresh') {
+		pgVersion = null;
+		pollPgState();
+	}
+});
+
+applyTheme(currentTheme);
+showSummaryState();
+pollPgState();
 </script>
 </body>
 </html>

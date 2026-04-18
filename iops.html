@@ -3,12 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+if (window.location.search.indexOf('theme=dark') !== -1) {
+	document.documentElement.classList.add('theme-dark-boot');
+}
+</script>
 <style>
 html, body {
 	margin: 0;
 	padding: 0;
 	background: #ffffff;
 	font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+}
+
+html.theme-dark-boot,
+html.theme-dark-boot body {
+	background: #111c22;
 }
 
 .chrome {
@@ -226,6 +236,14 @@ if (currentTheme === 'dark') {
 	document.documentElement.classList.add('theme-dark');
 	document.documentElement.style.background = '#111c22';
 	document.body.style.background = '#111c22';
+}
+
+function applyTheme(theme) {
+	currentTheme = theme === 'dark' ? 'dark' : 'light';
+	document.documentElement.classList.toggle('theme-dark', currentTheme === 'dark');
+	document.documentElement.classList.toggle('theme-dark-boot', currentTheme === 'dark');
+	document.documentElement.style.background = currentTheme === 'dark' ? '#111c22' : '#ffffff';
+	document.body.style.background = currentTheme === 'dark' ? '#111c22' : '#ffffff';
 }
 
 function setMessage(text) {
@@ -566,6 +584,12 @@ document.getElementById('viz-mode').addEventListener('change', function(event) {
 	document.getElementById('latency-value').textContent = currentLatencyLabel;
 	showChart();
 });
+window.addEventListener('message', function(event) {
+	var data = event.data || {};
+	if (data.type === 'theme') {
+		applyTheme(data.theme);
+	}
+});
 window.addEventListener('resize', function() {
 	window.clearTimeout(resizeTimer);
 	resizeTimer = window.setTimeout(function() {
@@ -579,6 +603,7 @@ window.addEventListener('resize', function() {
 	}, 120);
 });
 updateLatencyVisibility();
+applyTheme(currentTheme);
 tick();
 </script>
 </body>

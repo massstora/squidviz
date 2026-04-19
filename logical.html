@@ -53,6 +53,8 @@ if (window.location.search.indexOf('theme=dark') !== -1) {
 </script>
 <div class="message" id="message">Loading PG map...</div>
 <script src="d3.v3.min.js"></script>
+<script src="squidviz_config.js"></script>
+<script src="squidviz_api.js"></script>
 <script>
 var query = window.location.search || '';
 var stateMatch = query.match(/(?:\?|&)state=([^&]+)/);
@@ -334,7 +336,7 @@ function renderChart(root) {
 }
 
 function loadPgDump(version) {
-	d3.json('json/pgdump.php', function(error, root) {
+	d3.json(squidvizDataUrl('/json/pgdump'), function(error, root) {
 		if (error) {
 			setMessage('Unable to load the PG map.');
 			notifyParent('Logical PG dump failed', false);
@@ -364,7 +366,7 @@ function pollPgState(force) {
 	}
 
 	pollInFlight = true;
-	d3.json('json/pgmap.php', function(error, data) {
+	d3.json(squidvizDataUrl('/json/pgmap'), function(error, data) {
 		pollInFlight = false;
 
 		if (error || !data || data.ok === false) {

@@ -192,6 +192,8 @@ svg {
 </div>
 <div class="message" id="message">Loading IOPS history...</div>
 <script src="d3.v3.min.js"></script>
+<script src="squidviz_config.js"></script>
+<script src="squidviz_api.js"></script>
 <script>
 var points = 40;
 var readData = d3.range(points).map(function() { return 0; });
@@ -281,7 +283,7 @@ function updateLatency(commitLatency, applyLatency) {
 }
 
 function iopsEndpointUrl() {
-	return latencyEnabled ? 'json/iops.php?latency=1' : 'json/iops.php';
+	return latencyEnabled ? squidvizDataUrl('/json/iops?latency=1') : squidvizDataUrl('/json/iops');
 }
 
 function getDimensions() {

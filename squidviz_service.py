@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Standalone SquidViz backend microservice.
+"""SquidViz Python data service.
 
-This service mirrors the current PHP JSON endpoints so the frontend can be
-moved off PHP later without rewriting the data-gathering logic again.
+This is the Python backend for the pybackend branch of SquidViz. It serves the
+JSON endpoints consumed by the static wallboard, runs read-only Ceph CLI
+commands, and caches results so multiple open displays do not repeatedly query
+the cluster for the same data.
 
 Exposed endpoints:
   /healthz
@@ -12,7 +14,7 @@ Exposed endpoints:
   /json/pgdump
   /json/iops
 
-Run example:
+Local run example:
   python3 squidviz_service.py --host 127.0.0.1 --port 8081
 
 Remote test example:
@@ -20,6 +22,12 @@ Remote test example:
 
 Remote locked-down example:
   python3 squidviz_service.py --host 0.0.0.0 --port 8081 --cors-origin "http://squidviz.example.com"
+
+Cache timing example:
+  python3 squidviz_service.py --iops-ttl 2 --pgmap-ttl 8 --pgdump-ttl 10 --osdtree-ttl 10 --osdmap-ttl 10
+
+Ceph client example:
+  python3 squidviz_service.py --ceph-name client.squidviz --ceph-keyring /etc/ceph/ceph.client.squidviz.keyring
 """
 
 from __future__ import annotations
@@ -29,21 +37,17 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 
 LOG = logging.getLogger("squidviz_service")
-REPO_ROOT = Path(__file__).resolve().parent
-PHP_CONFIG = REPO_ROOT / "json" / "config.php"
 
 
 @dataclass
@@ -62,25 +66,16 @@ class CephCommandError(RuntimeError):
 
 
 def load_config() -> CephConfig:
-    config = CephConfig(
+    return CephConfig(
         ceph_bin=os.getenv("SQUIDVIZ_CEPH_BIN", "/usr/bin/ceph"),
         ceph_name=os.getenv("SQUIDVIZ_CEPH_NAME") or None,
         ceph_keyring=os.getenv("SQUIDVIZ_CEPH_KEYRING") or None,
     )
 
-    if PHP_CONFIG.exists():
-        content = PHP_CONFIG.read_text(encoding="utf-8")
-        for key in ("ceph_bin", "ceph_name", "ceph_keyring"):
-            match = re.search(rf'"{key}"\s*=>\s*"([^"]*)"', content)
-            if match:
-                setattr(config, key, match.group(1) or None)
-
-    return config
-
 
 CONFIG = load_config()
 
-ENDPOINT_TTLS = {
+ENDPOINT_TTLS: dict[str, float] = {
     "osdtree": 10.0,
     "pgmap": 10.0,
     "osdmap": 10.0,
@@ -500,6 +495,9 @@ def parse_args() -> argparse.Namespace:
         help="Bind address. Use 0.0.0.0 to listen remotely. Default: 127.0.0.1",
     )
     parser.add_argument("--port", type=int, default=8081, help="Bind port. Default: 8081")
+    parser.add_argument("--ceph-bin", default=None, help="Path to the ceph binary. Overrides config/env.")
+    parser.add_argument("--ceph-name", default=None, help="Ceph client name, for example client.squidviz. Overrides config/env.")
+    parser.add_argument("--ceph-keyring", default=None, help="Path to the Ceph keyring. Overrides config/env.")
     parser.add_argument(
         "--cors-origin",
         default="*",
@@ -511,11 +509,42 @@ def parse_args() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity. Default: INFO",
     )
+    parser.add_argument("--iops-ttl", type=float, default=ENDPOINT_TTLS["iops"], help="IOPS cache lifetime in seconds. Default: 2")
+    parser.add_argument("--pgmap-ttl", type=float, default=ENDPOINT_TTLS["pgmap"], help="PG map check cache lifetime in seconds. Default: 10")
+    parser.add_argument("--pgdump-ttl", type=float, default=ENDPOINT_TTLS["pgdump"], help="Full PG dump cache lifetime in seconds. Default: 10")
+    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 10")
+    parser.add_argument("--osdmap-ttl", type=float, default=ENDPOINT_TTLS["osdmap"], help="OSD map check cache lifetime in seconds. Default: 10")
     return parser.parse_args()
+
+
+def apply_cache_ttls(args: argparse.Namespace) -> None:
+    requested_ttls = {
+        "iops": args.iops_ttl,
+        "pgmap": args.pgmap_ttl,
+        "pgdump": args.pgdump_ttl,
+        "osdtree": args.osdtree_ttl,
+        "osdmap": args.osdmap_ttl,
+    }
+
+    for endpoint, ttl in requested_ttls.items():
+        if ttl < 0:
+            raise ValueError(f"{endpoint} TTL must be 0 or greater.")
+        ENDPOINT_TTLS[endpoint] = ttl
+
+
+def apply_ceph_overrides(args: argparse.Namespace) -> None:
+    if args.ceph_bin:
+        CONFIG.ceph_bin = args.ceph_bin
+    if args.ceph_name:
+        CONFIG.ceph_name = args.ceph_name
+    if args.ceph_keyring:
+        CONFIG.ceph_keyring = args.ceph_keyring
 
 
 def main() -> None:
     args = parse_args()
+    apply_ceph_overrides(args)
+    apply_cache_ttls(args)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
     LOG.info("Starting SquidViz service on %s:%s", args.host, args.port)
     LOG.info("Using Ceph binary: %s", CONFIG.ceph_bin)
@@ -524,6 +553,7 @@ def main() -> None:
     if CONFIG.ceph_keyring:
         LOG.info("Using Ceph keyring: %s", CONFIG.ceph_keyring)
     LOG.info("Using CORS origin: %s", args.cors_origin)
+    LOG.info("Using cache TTLs: %s", ENDPOINT_TTLS)
 
     server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)
     try:

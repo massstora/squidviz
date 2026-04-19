@@ -47,6 +47,8 @@ html.theme-dark-boot body {
 <body>
 <div class="message" id="message">Loading Ceph OSD tree...</div>
 <script src="d3.v3.min.js"></script>
+<script src="squidviz_config.js"></script>
+<script src="squidviz_api.js"></script>
 <script>
 var margin = {top: 20, right: 180, bottom: 20, left: 140};
 var duration = 450;
@@ -306,7 +308,7 @@ function click(d) {
 }
 
 function loadTree() {
-	d3.json('json/osdtree.php', function(error, data) {
+	d3.json(squidvizDataUrl('/json/osdtree'), function(error, data) {
 		if (error) {
 			setMessage('Unable to load the Ceph OSD tree.');
 			return;

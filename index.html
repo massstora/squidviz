@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SquidViz | Ceph Visualizer</title>
 <script src="jquery.min.js"></script>
+<script src="squidviz_config.js"></script>
+<script src="squidviz_api.js"></script>
 <script>
 if (window.localStorage.getItem('squidviz-theme') === 'dark') {
 	document.documentElement.classList.add('theme-dark-boot');
@@ -405,7 +407,7 @@ function pollOsdState() {
 	}
 
 	$.ajax({
-		url: 'json/osdmap.php',
+		url: squidvizDataUrl('/json/osdmap'),
 		type: 'GET',
 		dataType: 'json',
 		cache: false

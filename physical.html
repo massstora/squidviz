@@ -65,6 +65,14 @@ var defaultDepth = depthMatch ? parseInt(decodeURIComponent(depthMatch[1]), 10) 
 var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 var currentData = null;
 
+function messageOrigin() {
+	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
+}
+
+function isExpectedMessage(event) {
+	return messageOrigin() === '*' || event.origin === window.location.origin;
+}
+
 if (isNaN(defaultDepth) || defaultDepth < 1) {
 	defaultDepth = 2;
 }
@@ -333,6 +341,10 @@ window.addEventListener('resize', function() {
 });
 
 window.addEventListener('message', function(event) {
+	if (!isExpectedMessage(event)) {
+		return;
+	}
+
 	var data = event.data || {};
 
 	if (data.type === 'theme') {

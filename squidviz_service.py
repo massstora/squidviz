@@ -14,20 +14,8 @@ Exposed endpoints:
   /json/pgdump
   /json/iops
 
-Local run example:
-  python3 squidviz_service.py --host 127.0.0.1 --port 8081
-
-Remote test example:
-  python3 squidviz_service.py --host 0.0.0.0 --port 8081 --cors-origin "*"
-
-Remote locked-down example:
-  python3 squidviz_service.py --host 0.0.0.0 --port 8081 --cors-origin "http://squidviz.example.com"
-
-Cache timing example:
-  python3 squidviz_service.py --iops-ttl 2 --pgmap-ttl 8 --pgdump-ttl 10 --osdtree-ttl 10 --osdmap-ttl 10
-
-Ceph client example:
-  python3 squidviz_service.py --ceph-name client.squidviz --ceph-keyring /etc/ceph/ceph.client.squidviz.keyring
+Run example:
+  python3 squidviz_service.py
 """
 
 from __future__ import annotations
@@ -36,7 +24,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import subprocess
 import threading
 import time
@@ -50,9 +37,51 @@ from urllib.parse import parse_qs, urlparse
 LOG = logging.getLogger("squidviz_service")
 
 
+# =============================================================================
+# SquidViz Service Settings
+# =============================================================================
+# Edit this section for normal deployments. Command-line arguments can still
+# override these values, but the intended simple startup is:
+#
+#   python3 squidviz_service.py
+#
+
+# Network listener. Keep 127.0.0.1 when Apache reverse-proxies /json/.
+# Use 0.0.0.0 only when another internal web server must reach this service.
+SERVICE_HOST = "127.0.0.1"
+SERVICE_PORT = 8081
+CORS_ORIGIN = "*"
+LOG_LEVEL = "INFO"
+EXPOSE_ERROR_DETAILS = False
+
+# Ceph CLI identity. These defaults match the README's recommended read-only
+# client name and keyring path.
+CEPH_BIN = "/usr/bin/ceph"
+CEPH_NAME = "client.squidviz"
+CEPH_KEYRING = "/etc/ceph/ceph.client.squidviz.keyring"
+CEPH_COMMAND_TIMEOUT = 30.0
+
+# Cache lifetimes in seconds. These are shared by every wallboard using this
+# service, so many monitors do not multiply Ceph command execution.
+IOPS_TTL = 2.0
+PGMAP_TTL = 10.0
+OSDMAP_TTL = 10.0
+OSDTREE_TTL = 10.0
+PGDUMP_TTL = 10.0
+PGDUMP_TOO_MANY_TTL = 30.0
+
+# Logical view safety limit. If more unhealthy PGs exist than this value,
+# SquidViz returns affected pools and state counts instead of every PG.
+MAX_UNHEALTHY_PGS = 2500
+
+# How long a request waits when another thread is already refreshing the same
+# expired cache entry and no stale value exists yet.
+REFRESH_WAIT_SECONDS = 5.0
+
+
 @dataclass
 class CephConfig:
-    ceph_bin: str = "/usr/bin/ceph"
+    ceph_bin: str = CEPH_BIN
     ceph_name: str | None = None
     ceph_keyring: str | None = None
 
@@ -67,24 +96,25 @@ class CephCommandError(RuntimeError):
 
 def load_config() -> CephConfig:
     return CephConfig(
-        ceph_bin=os.getenv("SQUIDVIZ_CEPH_BIN", "/usr/bin/ceph"),
-        ceph_name=os.getenv("SQUIDVIZ_CEPH_NAME") or None,
-        ceph_keyring=os.getenv("SQUIDVIZ_CEPH_KEYRING") or None,
+        ceph_bin=CEPH_BIN,
+        ceph_name=CEPH_NAME or None,
+        ceph_keyring=CEPH_KEYRING or None,
     )
 
 
 CONFIG = load_config()
 
 ENDPOINT_TTLS: dict[str, float] = {
-    "osdtree": 10.0,
-    "pgmap": 10.0,
-    "osdmap": 10.0,
-    "pgdump": 10.0,
-    "iops": 2.0,
+    "osdtree": OSDTREE_TTL,
+    "pgmap": PGMAP_TTL,
+    "osdmap": OSDMAP_TTL,
+    "pgdump": PGDUMP_TTL,
+    "iops": IOPS_TTL,
 }
 
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_REFRESH_EVENTS: dict[str, threading.Event] = {}
 
 
 def json_response(payload: dict[str, Any], status_code: int = 200) -> tuple[int, bytes]:
@@ -93,12 +123,29 @@ def json_response(payload: dict[str, Any], status_code: int = 200) -> tuple[int,
 
 def error_response(message: str, details: dict[str, Any] | None = None, status_code: int = 500) -> tuple[int, bytes]:
     payload: dict[str, Any] = {"ok": False, "error": message}
-    if details:
+    if details and EXPOSE_ERROR_DETAILS:
         payload["details"] = details
     return json_response(payload, status_code)
 
 
-def get_cached_payload(cache_key: str) -> dict[str, Any] | None:
+def clean_subprocess_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return value.strip()
+
+
+def annotate_cache_payload(payload: dict[str, Any], expires_at: float, stale: bool) -> dict[str, Any]:
+    annotated = dict(payload)
+    annotated["_cache"] = {
+        "stale": stale,
+        "expires_in": max(0.0, expires_at - time.monotonic()),
+    }
+    return annotated
+
+
+def get_cached_payload(cache_key: str, allow_stale: bool = False) -> dict[str, Any] | None:
     now = time.monotonic()
     with _CACHE_LOCK:
         entry = _CACHE.get(cache_key)
@@ -107,17 +154,18 @@ def get_cached_payload(cache_key: str) -> dict[str, Any] | None:
 
         expires_at, payload = entry
         if now >= expires_at:
-            _CACHE.pop(cache_key, None)
+            if allow_stale:
+                return annotate_cache_payload(payload, expires_at, True)
             return None
 
-        return payload
+        return annotate_cache_payload(payload, expires_at, False)
 
 
 def set_cached_payload(cache_key: str, payload: dict[str, Any], ttl: float) -> dict[str, Any]:
     expires_at = time.monotonic() + ttl
     with _CACHE_LOCK:
         _CACHE[cache_key] = (expires_at, payload)
-    return payload
+    return annotate_cache_payload(payload, expires_at, False)
 
 
 def cached_endpoint(name: str, key_suffix: str, factory: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -126,8 +174,50 @@ def cached_endpoint(name: str, key_suffix: str, factory: Callable[[], dict[str, 
     if cached is not None:
         return cached
 
-    payload = factory()
-    return set_cached_payload(cache_key, payload, ENDPOINT_TTLS[name])
+    with _CACHE_LOCK:
+        refresh_event = _REFRESH_EVENTS.get(cache_key)
+        if refresh_event is None:
+            refresh_event = threading.Event()
+            _REFRESH_EVENTS[cache_key] = refresh_event
+            should_refresh = True
+        else:
+            should_refresh = False
+
+    if not should_refresh:
+        stale = get_cached_payload(cache_key, allow_stale=True)
+        if stale is not None:
+            return stale
+
+        refresh_event.wait(REFRESH_WAIT_SECONDS)
+        refreshed = get_cached_payload(cache_key, allow_stale=True)
+        if refreshed is not None:
+            return refreshed
+
+        raise CephCommandError(
+            "Timed out waiting for cached data refresh.",
+            {"endpoint": name, "cache_key": cache_key, "wait_seconds": REFRESH_WAIT_SECONDS},
+            503,
+        )
+
+    try:
+        payload = factory()
+        ttl = ENDPOINT_TTLS[name]
+        if name == "pgdump" and payload.get("too_many_problem_pgs"):
+            ttl = max(ttl, PGDUMP_TOO_MANY_TTL)
+
+        return set_cached_payload(cache_key, payload, ttl)
+    except Exception:
+        stale = get_cached_payload(cache_key, allow_stale=True)
+        if stale is not None:
+            stale["_cache"]["refresh_error"] = True
+            LOG.exception("Refresh failed for %s; serving stale cache.", cache_key)
+            return stale
+        raise
+    finally:
+        with _CACHE_LOCK:
+            event = _REFRESH_EVENTS.pop(cache_key, None)
+            if event is not None:
+                event.set()
 
 
 def ceph_command_prefix(arguments: list[str]) -> list[str]:
@@ -152,12 +242,22 @@ def run_ceph_json(arguments: list[str], optional: bool = False) -> Any | None:
             check=False,
             capture_output=True,
             text=True,
+            timeout=CEPH_COMMAND_TIMEOUT,
         )
     except OSError as exc:
         if optional:
             LOG.warning("Unable to start optional Ceph command %s: %s", command, exc)
             return None
         raise CephCommandError("Unable to start ceph command.", {"command": " ".join(command), "error": str(exc)})
+    except subprocess.TimeoutExpired as exc:
+        if optional:
+            LOG.warning("Optional Ceph command timed out after %ss: %s", CEPH_COMMAND_TIMEOUT, " ".join(command))
+            return None
+        raise CephCommandError(
+            "Ceph command timed out.",
+            {"command": " ".join(command), "timeout_seconds": CEPH_COMMAND_TIMEOUT, "stderr": clean_subprocess_output(exc.stderr)},
+            504,
+        )
 
     if result.returncode != 0:
         if optional:
@@ -193,9 +293,16 @@ def run_ceph_json_fallback(commands: list[list[str]]) -> Any:
     for arguments in commands:
         command = ceph_command_prefix(arguments)
         try:
-            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=CEPH_COMMAND_TIMEOUT)
         except OSError as exc:
             last_error = {"command": " ".join(command), "error": str(exc)}
+            continue
+        except subprocess.TimeoutExpired as exc:
+            last_error = {
+                "command": " ".join(command),
+                "timeout_seconds": CEPH_COMMAND_TIMEOUT,
+                "stderr": clean_subprocess_output(exc.stderr),
+            }
             continue
 
         if result.returncode != 0:
@@ -321,10 +428,13 @@ def get_pgdump_payload() -> dict[str, Any]:
         "summary": {
             "total_pgs": len(pg_stats),
             "problem_pgs": 0,
+            "max_problem_pgs": MAX_UNHEALTHY_PGS,
+            "state_counts": {},
         },
     }
 
     pool_indexes: dict[str, int] = {}
+    affected_pools: dict[str, dict[str, Any]] = {}
 
     for pg in pg_stats:
         state = pg.get("state", "unknown")
@@ -332,6 +442,45 @@ def get_pgdump_payload() -> dict[str, Any]:
             continue
 
         pg_tree["summary"]["problem_pgs"] += 1
+        state_counts = pg_tree["summary"]["state_counts"]
+        state_counts[state] = state_counts.get(state, 0) + 1
+        pgid = pg.get("pgid", "")
+        pool_id = pgid.split(".", 1)[0]
+        pool_key = pool_id if pool_id else "unknown"
+        pool_name = pools.get(int(pool_key) if pool_key.isdigit() else pool_key, f"pool {pool_key}")
+
+        if pool_key not in affected_pools:
+            affected_pools[pool_key] = {
+                "name": pool_key,
+                "pool_name": pool_name,
+                "problem_pgs": 0,
+                "state_counts": {},
+                "children": [],
+            }
+
+        affected_pool = affected_pools[pool_key]
+        affected_pool["problem_pgs"] += 1
+        affected_pool["value"] = affected_pool["problem_pgs"]
+        affected_pool["state_counts"][state] = affected_pool["state_counts"].get(state, 0) + 1
+
+    if pg_tree["summary"]["problem_pgs"] > MAX_UNHEALTHY_PGS:
+        pg_tree["too_many_problem_pgs"] = True
+        pg_tree["children"] = sorted(
+            affected_pools.values(),
+            key=lambda pool: pool["problem_pgs"],
+            reverse=True,
+        )
+        pg_tree["message"] = (
+            f"Too many unhealthy PGs to list safely "
+            f"({pg_tree['summary']['problem_pgs']} found, limit {MAX_UNHEALTHY_PGS})."
+        )
+        return pg_tree
+
+    for pg in pg_stats:
+        state = pg.get("state", "unknown")
+        if state == "active+clean":
+            continue
+
         pgid = pg.get("pgid", "")
         parts = pgid.split(".", 1)
         pool_id = parts[0]
@@ -459,13 +608,14 @@ class SquidVizHandler(BaseHTTPRequestHandler):
                     cached_endpoint("pgdump", "default", get_pgdump_payload)
                 )
             elif route == "/json/iops":
-                latency_flag = query.get("latency", ["0"])[0]
+                latency_flag = "1" if query.get("latency", ["0"])[0] == "1" else "0"
                 status_code, payload = json_response(
                     cached_endpoint("iops", f"latency={latency_flag}", lambda: get_iops_payload(query))
                 )
             else:
                 status_code, payload = error_response("Not found.", status_code=404)
         except CephCommandError as exc:
+            LOG.warning("Ceph command error serving %s: %s details=%s", self.path, exc.message, exc.details)
             status_code, payload = error_response(exc.message, exc.details, exc.status_code)
         except Exception as exc:  # pragma: no cover - defensive fallback
             LOG.exception("Unhandled error serving %s", self.path)
@@ -491,33 +641,48 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the SquidViz backend microservice.")
     parser.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Bind address. Use 0.0.0.0 to listen remotely. Default: 127.0.0.1",
+        default=SERVICE_HOST,
+        help=f"Bind address. Use 0.0.0.0 to listen remotely. Default: {SERVICE_HOST}",
     )
-    parser.add_argument("--port", type=int, default=8081, help="Bind port. Default: 8081")
-    parser.add_argument("--ceph-bin", default=None, help="Path to the ceph binary. Overrides config/env.")
-    parser.add_argument("--ceph-name", default=None, help="Ceph client name, for example client.squidviz. Overrides config/env.")
-    parser.add_argument("--ceph-keyring", default=None, help="Path to the Ceph keyring. Overrides config/env.")
+    parser.add_argument("--port", type=int, default=SERVICE_PORT, help=f"Bind port. Default: {SERVICE_PORT}")
+    parser.add_argument("--ceph-bin", default=CEPH_BIN, help=f"Path to the ceph binary. Default: {CEPH_BIN}")
+    parser.add_argument("--ceph-name", default=CEPH_NAME, help=f"Ceph client name. Default: {CEPH_NAME}")
+    parser.add_argument("--ceph-keyring", default=CEPH_KEYRING, help=f"Path to the Ceph keyring. Default: {CEPH_KEYRING}")
+    parser.add_argument("--ceph-command-timeout", type=float, default=CEPH_COMMAND_TIMEOUT, help=f"Ceph command timeout in seconds. Default: {int(CEPH_COMMAND_TIMEOUT)}")
     parser.add_argument(
         "--cors-origin",
-        default="*",
-        help='Allowed browser origin for cross-host requests. Default: "*"',
+        default=CORS_ORIGIN,
+        help=f"Allowed browser origin for cross-host requests. Default: {CORS_ORIGIN}",
     )
     parser.add_argument(
         "--log-level",
-        default="INFO",
+        default=LOG_LEVEL,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging verbosity. Default: INFO",
+        help=f"Logging verbosity. Default: {LOG_LEVEL}",
     )
     parser.add_argument("--iops-ttl", type=float, default=ENDPOINT_TTLS["iops"], help="IOPS cache lifetime in seconds. Default: 2")
     parser.add_argument("--pgmap-ttl", type=float, default=ENDPOINT_TTLS["pgmap"], help="PG map check cache lifetime in seconds. Default: 10")
     parser.add_argument("--pgdump-ttl", type=float, default=ENDPOINT_TTLS["pgdump"], help="Full PG dump cache lifetime in seconds. Default: 10")
+    parser.add_argument(
+        "--pgdump-too-many-ttl",
+        type=float,
+        default=PGDUMP_TOO_MANY_TTL,
+        help=f"Full PG dump cache lifetime when unhealthy PG count exceeds the visualization cap. Default: {int(PGDUMP_TOO_MANY_TTL)}",
+    )
     parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 10")
     parser.add_argument("--osdmap-ttl", type=float, default=ENDPOINT_TTLS["osdmap"], help="OSD map check cache lifetime in seconds. Default: 10")
+    parser.add_argument(
+        "--max-unhealthy-pgs",
+        type=int,
+        default=MAX_UNHEALTHY_PGS,
+        help=f"Maximum unhealthy PGs to include in the logical visualization. Default: {MAX_UNHEALTHY_PGS}",
+    )
     return parser.parse_args()
 
 
 def apply_cache_ttls(args: argparse.Namespace) -> None:
+    global PGDUMP_TOO_MANY_TTL
+
     requested_ttls = {
         "iops": args.iops_ttl,
         "pgmap": args.pgmap_ttl,
@@ -531,20 +696,39 @@ def apply_cache_ttls(args: argparse.Namespace) -> None:
             raise ValueError(f"{endpoint} TTL must be 0 or greater.")
         ENDPOINT_TTLS[endpoint] = ttl
 
+    if args.pgdump_too_many_ttl < 0:
+        raise ValueError("pgdump too-many TTL must be 0 or greater.")
+    PGDUMP_TOO_MANY_TTL = args.pgdump_too_many_ttl
+
 
 def apply_ceph_overrides(args: argparse.Namespace) -> None:
+    global CEPH_COMMAND_TIMEOUT
+
     if args.ceph_bin:
         CONFIG.ceph_bin = args.ceph_bin
     if args.ceph_name:
         CONFIG.ceph_name = args.ceph_name
     if args.ceph_keyring:
         CONFIG.ceph_keyring = args.ceph_keyring
+    if args.ceph_command_timeout < 1:
+        raise ValueError("Ceph command timeout must be at least 1 second.")
+    CEPH_COMMAND_TIMEOUT = args.ceph_command_timeout
+
+
+def apply_visualization_limits(args: argparse.Namespace) -> None:
+    global MAX_UNHEALTHY_PGS
+
+    if args.max_unhealthy_pgs < 1:
+        raise ValueError("max unhealthy PG limit must be at least 1.")
+
+    MAX_UNHEALTHY_PGS = args.max_unhealthy_pgs
 
 
 def main() -> None:
     args = parse_args()
     apply_ceph_overrides(args)
     apply_cache_ttls(args)
+    apply_visualization_limits(args)
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
     LOG.info("Starting SquidViz service on %s:%s", args.host, args.port)
     LOG.info("Using Ceph binary: %s", CONFIG.ceph_bin)
@@ -552,8 +736,11 @@ def main() -> None:
         LOG.info("Using Ceph client: %s", CONFIG.ceph_name)
     if CONFIG.ceph_keyring:
         LOG.info("Using Ceph keyring: %s", CONFIG.ceph_keyring)
+    LOG.info("Using Ceph command timeout: %ss", CEPH_COMMAND_TIMEOUT)
     LOG.info("Using CORS origin: %s", args.cors_origin)
     LOG.info("Using cache TTLs: %s", ENDPOINT_TTLS)
+    LOG.info("Using PG dump too-many TTL: %s", PGDUMP_TOO_MANY_TTL)
+    LOG.info("Using max unhealthy PG visualization limit: %s", MAX_UNHEALTHY_PGS)
 
     server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)
     try:

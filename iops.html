@@ -234,6 +234,14 @@ var barWidth = 0;
 var currentLatencyLabel = '--';
 var latencyEnabled = false;
 
+function messageOrigin() {
+	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
+}
+
+function isExpectedMessage(event) {
+	return messageOrigin() === '*' || event.origin === window.location.origin;
+}
+
 if (currentTheme === 'dark') {
 	document.documentElement.classList.add('theme-dark');
 	document.documentElement.style.background = '#111c22';
@@ -587,6 +595,10 @@ document.getElementById('viz-mode').addEventListener('change', function(event) {
 	showChart();
 });
 window.addEventListener('message', function(event) {
+	if (!isExpectedMessage(event)) {
+		return;
+	}
+
 	var data = event.data || {};
 	if (data.type === 'theme') {
 		applyTheme(data.theme);

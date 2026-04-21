@@ -64,13 +64,23 @@ var requestedState = stateMatch ? decodeURIComponent(stateMatch[1]) : 'loading';
 var requestedVersion = versionMatch ? decodeURIComponent(versionMatch[1]) : '';
 var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
 var color = d3.scale.category20c();
-var partition = d3.layout.partition().value(function() { return 1; });
+var partition = d3.layout.partition().value(function(d) {
+	return d.value || 1;
+});
 var resizeTimer = null;
 var currentRoot = null;
 var currentChart = null;
 var pgVersion = null;
 var autoRefresh = true;
 var pollInFlight = false;
+
+function messageOrigin() {
+	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
+}
+
+function isExpectedMessage(event) {
+	return messageOrigin() === '*' || event.origin === window.location.origin;
+}
 
 if (currentTheme === 'dark') {
 	document.documentElement.style.background = '#111c22';
@@ -98,9 +108,37 @@ function setMessage(text) {
 	document.getElementById('message').textContent = text;
 }
 
+function formatStateCounts(stateCounts) {
+	var states = [];
+
+	for (var state in stateCounts) {
+		if (Object.prototype.hasOwnProperty.call(stateCounts, state)) {
+			states.push({
+				name: state,
+				count: stateCounts[state]
+			});
+		}
+	}
+
+	states.sort(function(a, b) {
+		return b.count - a.count;
+	});
+
+	return states.slice(0, 5).map(function(state) {
+		return state.name + ': ' + state.count;
+	}).join(' | ');
+}
+
 function showChart() {
 	document.getElementById('message').style.display = 'none';
 	d3.select('svg').style('display', 'block');
+}
+
+function showChartMessage(text) {
+	var message = document.getElementById('message');
+	message.style.display = 'block';
+	message.style.color = currentTheme === 'dark' ? '#dce8ed' : '#58707a';
+	message.textContent = text;
 }
 
 function showSummaryState() {
@@ -126,7 +164,7 @@ function notifyParent(message, ok) {
 			type: 'logical-status',
 			message: message,
 			ok: ok
-		}, '*');
+		}, messageOrigin());
 	}
 }
 
@@ -298,13 +336,17 @@ function renderChart(root) {
 			}
 
 			if (d.depth === 1) {
-				return d.pool_name;
+				return d.problem_pgs ? d.pool_name + ' (' + d.problem_pgs + ')' : d.pool_name;
 			}
 
 			return '';
 		});
 
 	g.append('svg:title').text(function(d) {
+		if (d.depth === 1 && d.problem_pgs) {
+			return d.pool_name + ' | ' + d.problem_pgs + ' unhealthy PGs';
+		}
+
 		if (d.depth < 2) {
 			return '';
 		}
@@ -346,6 +388,21 @@ function loadPgDump(version) {
 		if (root.ok === false) {
 			setMessage(root.error || 'Unable to load the PG map.');
 			notifyParent('Logical PG dump failed', false);
+			return;
+		}
+
+		if (root.too_many_problem_pgs) {
+			var summary = root.summary || {};
+			var stateSummary = formatStateCounts(summary.state_counts || {});
+			var message = root.message || 'Too many unhealthy PGs to list safely.';
+
+			if (stateSummary) {
+				message += ' Top states: ' + stateSummary + '.';
+			}
+
+			renderChart(root);
+			showChartMessage(message);
+			notifyParent('Too many unhealthy PGs to render', false);
 			return;
 		}
 
@@ -401,6 +458,10 @@ window.addEventListener('resize', function() {
 });
 
 window.addEventListener('message', function(event) {
+	if (!isExpectedMessage(event)) {
+		return;
+	}
+
 	var data = event.data || {};
 
 	if (data.type === 'theme') {

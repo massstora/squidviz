@@ -213,7 +213,7 @@ body.theme-dark .status {
 
 .dashboard {
 	display: grid;
-	grid-template-columns: 1.08fr 1fr;
+	grid-template-columns: 0.90fr 1fr;
 	grid-template-rows: minmax(0, 1fr) auto;
 	gap: 8px;
 	height: calc(100vh - 24px);
@@ -367,6 +367,14 @@ body.theme-dark .legend {
 var osdVersion = null;
 var refreshTimer = null;
 
+function messageOrigin() {
+	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
+}
+
+function isExpectedMessage(event) {
+	return messageOrigin() === '*' || event.origin === window.location.origin;
+}
+
 function updateStatus(message, healthy) {
 	var $text = $('#refresh-status-text');
 	var $dot = $('#refresh-status-dot');
@@ -378,7 +386,7 @@ function updateStatus(message, healthy) {
 function postFrameMessage(selector, message) {
 	var frame = $(selector).get(0);
 	if (frame && frame.contentWindow) {
-		frame.contentWindow.postMessage(message, '*');
+		frame.contentWindow.postMessage(message, messageOrigin());
 	}
 }
 
@@ -502,6 +510,10 @@ $(function() {
 	});
 
 	window.addEventListener('message', function(event) {
+		if (!isExpectedMessage(event)) {
+			return;
+		}
+
 		var data = event.data || {};
 		if (data.type === 'logical-status') {
 			updateStatus(data.message || 'Logical view updated', data.ok !== false);

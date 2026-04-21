@@ -95,53 +95,50 @@ If you run the service as another user, adjust the group accordingly.
 
 ### 6. Configure The Python Data Service
 
-Start the Python data service on the host that has Ceph access.
+Edit the clearly marked `SquidViz Service Settings` block near the top of [squidviz_service.py]. This is the normal configuration method.
 
-If the Python service runs on the same machine as the web server, keep it bound to localhost:
+The defaults match the recommended read-only Ceph client:
 
-```bash
-python3 squidviz_service.py \
-  --host 127.0.0.1 \
-  --port 8081 \
-  --ceph-name client.squidviz \
-  --ceph-keyring /etc/ceph/ceph.client.squidviz.keyring
+```python
+SERVICE_HOST = "127.0.0.1"
+SERVICE_PORT = 8081
+
+CEPH_BIN = "/usr/bin/ceph"
+CEPH_NAME = "client.squidviz"
+CEPH_KEYRING = "/etc/ceph/ceph.client.squidviz.keyring"
+CEPH_COMMAND_TIMEOUT = 30.0
+
+IOPS_TTL = 2.0
+PGMAP_TTL = 10.0
+OSDMAP_TTL = 10.0
+OSDTREE_TTL = 10.0
+PGDUMP_TTL = 10.0
+PGDUMP_TOO_MANY_TTL = 30.0
+
+MAX_UNHEALTHY_PGS = 2500
 ```
 
-If the Python service runs on a separate internal Ceph host, bind it to a reachable internal interface and allow only the SquidViz web server through your firewall:
+If the Python service runs on the same machine as the web server, keep `SERVICE_HOST` set to `127.0.0.1`.
 
-```bash
-python3 squidviz_service.py \
-  --host 0.0.0.0 \
-  --port 8081 \
-  --ceph-name client.squidviz \
-  --ceph-keyring /etc/ceph/ceph.client.squidviz.keyring
+If the Python service runs on a separate internal Ceph host, set:
+
+```python
+SERVICE_HOST = "0.0.0.0"
 ```
 
-The backend caches command output so multiple wallboards do not all run the same Ceph commands at once. Cache timing can be adjusted at startup:
+and allow only the SquidViz web server through your firewall.
+
+After the settings are correct, start the service. No command-line options are required for a normal deployment:
 
 ```bash
-python3 squidviz_service.py \
-  --iops-ttl 2 \
-  --pgmap-ttl 8 \
-  --pgdump-ttl 10 \
-  --osdtree-ttl 10 \
-  --osdmap-ttl 10
+python3 squidviz_service.py
 ```
 
-You can combine the Ceph options and cache options in one command:
+The backend caches command output so multiple wallboards do not all run the same Ceph commands at once. Cache timing is controlled by the `*_TTL` settings in [squidviz_service.py].
 
-```bash
-python3 squidviz_service.py \
-  --host 127.0.0.1 \
-  --port 8081 \
-  --ceph-name client.squidviz \
-  --ceph-keyring /etc/ceph/ceph.client.squidviz.keyring \
-  --iops-ttl 2 \
-  --pgmap-ttl 8 \
-  --pgdump-ttl 10 \
-  --osdtree-ttl 10 \
-  --osdmap-ttl 10
-```
+If more than `MAX_UNHEALTHY_PGS` PGs are unhealthy, SquidViz returns a summary and the affected pools instead of trying to send and render every unhealthy PG in the logical view. The Python service also keeps that capped `/json/pgdump` response cached for at least `PGDUMP_TOO_MANY_TTL` seconds. This keeps very large unhealthy clusters from overwhelming the browser or repeatedly running full PG dumps while still showing which pools are involved.
+
+The Python service coalesces cache refreshes per endpoint. If a cached response expires and many wallboards request it at the same time, only one request runs the real Ceph command while the others receive stale cached data or briefly wait for the refresh to complete.
 
 ### 7. Reverse Proxy `/json/` To The Data Service
 
@@ -190,14 +187,6 @@ Apache proxy lines when the Python service is on another internal host:
 ```apache
 ProxyPass        /json/ http://cephmachine:8081/json/
 ProxyPassReverse /json/ http://cephmachine:8081/json/
-```
-
-nginx reverse proxy example:
-
-```nginx
-location /json/ {
-    proxy_pass http://127.0.0.1:8081/json/;
-}
 ```
 
 If you intentionally want browsers to call the Python service directly, set [squidviz_config.js] to a browser-reachable URL:
@@ -250,7 +239,7 @@ The dashboard can only be as healthy as the CLI access behind `squidviz_service.
 - If the widgets say they cannot load data, try the matching Python endpoint directly, such as `/json/pgmap` or `/json/osdtree`.
 - If the browser cannot load data, check the web server reverse proxy for `/json/` first.
 - If you are using direct browser-to-service access, check [squidviz_config.js], firewall rules, and `--cors-origin`.
-- If the Python endpoint returns JSON errors mentioning Ceph, test the same command from the shell as the service user.
+- If the Python endpoint returns JSON errors mentioning Ceph, check the `squidviz_service.py` logs and test the same command from the shell as the service user.
 - If the service user gets `RADOS permission denied`, the keyring path, Ceph user, or file permissions are wrong.
 - If the service user reports `no keyring found`, make sure `/etc/ceph/ceph.client.squidviz.keyring` exists and matches the service startup options.
 - If the logical view stays empty, the cluster may simply have no unhealthy PGs right now.

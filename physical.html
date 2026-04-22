@@ -221,6 +221,15 @@ function countNodes(node) {
 	}, 0);
 }
 
+function nodeKey(d) {
+	if (!d._nodeKey) {
+		var rawId = d.id !== null && typeof d.id !== 'undefined' ? d.id : ++nodeIndex;
+		d._nodeKey = (d.type || 'node') + ':' + rawId + ':' + (d.name || '');
+	}
+
+	return d._nodeKey;
+}
+
 function renderTree(data) {
 	currentData = data;
 	document.getElementById('message').style.display = 'none';
@@ -264,7 +273,7 @@ function update(source) {
 	});
 
 	var node = svg.selectAll('g.node')
-		.data(nodes, function(d) { return d.id || (d.id = ++nodeIndex); });
+		.data(nodes, nodeKey);
 
 	var nodeEnter = node.enter().append('g')
 		.attr('class', 'node')
@@ -311,7 +320,7 @@ function update(source) {
 		.style('fill-opacity', 1e-6);
 
 	var link = svg.selectAll('path.link')
-		.data(links, function(d) { return d.target.id; });
+		.data(links, function(d) { return nodeKey(d.target); });
 
 	link.enter()
 		.insert('path', 'g')

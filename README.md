@@ -102,6 +102,9 @@ The defaults match the recommended read-only Ceph client:
 ```python
 SERVICE_HOST = "127.0.0.1"
 SERVICE_PORT = 8081
+CORS_ORIGIN = "*"
+LOG_LEVEL = "INFO"
+EXPOSE_ERROR_DETAILS = False
 
 CEPH_BIN = "/usr/bin/ceph"
 CEPH_NAME = "client.squidviz"
@@ -117,6 +120,7 @@ PGDUMP_TOO_MANY_TTL = 30.0
 
 MAX_UNHEALTHY_PGS = 2500
 LATENCY_WARNING_MS = 20.0
+REFRESH_WAIT_SECONDS = 5.0
 ```
 
 If the Python service runs on the same machine as the web server, keep `SERVICE_HOST` set to `127.0.0.1`.

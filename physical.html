@@ -63,6 +63,7 @@ var depthMatch = query.match(/(?:\?|&)depth=([^&]+)/);
 var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
 var defaultDepth = depthMatch ? parseInt(decodeURIComponent(depthMatch[1]), 10) : 2;
 var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
+var forceInitialRefresh = /(?:\?|&)refresh=1(?:&|$)/.test(query);
 var currentData = null;
 
 function messageOrigin() {
@@ -158,6 +159,41 @@ function markHealth(node) {
 
 	node.hasIssue = selfAffected || descendantAffected;
 	return node.hasIssue;
+}
+
+function osdIdFromNode(node) {
+	if (node.id !== null && typeof node.id !== 'undefined') {
+		return String(node.id);
+	}
+
+	if (node.name && node.name.indexOf('osd.') === 0) {
+		return node.name.replace('osd.', '');
+	}
+
+	return null;
+}
+
+function applyOsdState(node, osdStates) {
+	var children = node.children || [];
+	var changed = false;
+
+	if (node.type === 'osd') {
+		var osdId = osdIdFromNode(node);
+		var state = osdId !== null ? osdStates[osdId] : null;
+
+		if (state && node.status !== state.status) {
+			node.status = state.status;
+			changed = true;
+		}
+	}
+
+	children.forEach(function(child) {
+		if (applyOsdState(child, osdStates)) {
+			changed = true;
+		}
+	});
+
+	return changed;
 }
 
 function applyDefaultCollapse(node, depth) {
@@ -315,8 +351,10 @@ function click(d) {
 	update(d);
 }
 
-function loadTree() {
-	d3.json(squidvizDataUrl('/json/osdtree'), function(error, data) {
+function loadTree(forceRefresh) {
+	var url = forceRefresh ? '/json/osdtree?refresh=1' : '/json/osdtree';
+
+	d3.json(squidvizDataUrl(url), function(error, data) {
 		if (error) {
 			setMessage('Unable to load the Ceph OSD tree.');
 			return;
@@ -360,12 +398,18 @@ window.addEventListener('message', function(event) {
 	}
 
 	if (data.type === 'refresh') {
-		loadTree();
+		loadTree(data.force === true);
+	}
+
+	if (data.type === 'osd-state' && currentData) {
+		if (applyOsdState(currentData, data.osds || {})) {
+			renderTree(currentData);
+		}
 	}
 });
 
 applyTheme(currentTheme);
-loadTree();
+loadTree(forceInitialRefresh);
 </script>
 </body>
 </html>

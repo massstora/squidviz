@@ -119,17 +119,67 @@ iframe {
 	}
 }
 </style>
+<script src="squidviz_config.js"></script>
+<script src="squidviz_api.js"></script>
 <script>
 var refreshTimer = null;
+var osdStateVersion = null;
+var osdTopologyVersion = null;
+var lastOsdStates = {};
 
-function buildSrc() {
-	var depth = document.getElementById('physical-depth').value;
-	return 'physical.html?depth=' + encodeURIComponent(depth);
+function messageOrigin() {
+	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
 }
 
-function reloadFrame() {
+function buildSrc(forceRefresh) {
+	var depth = document.getElementById('physical-depth').value;
+	var src = 'physical.html?depth=' + encodeURIComponent(depth);
+	return forceRefresh ? src + '&refresh=1' : src;
+}
+
+function reloadFrame(forceRefresh) {
 	var frame = document.getElementById('physical-frame');
-	frame.src = buildSrc();
+	frame.src = buildSrc(forceRefresh);
+}
+
+function postFrameMessage(message) {
+	var frame = document.getElementById('physical-frame');
+	if (frame && frame.contentWindow) {
+		frame.contentWindow.postMessage(message, messageOrigin());
+	}
+}
+
+function pollOsdState() {
+	fetch(squidvizDataUrl('/json/osdmap'), {cache: 'no-store'})
+		.then(function(response) { return response.json(); })
+		.then(function(data) {
+			if (!data.ok) {
+				return;
+			}
+
+			if (osdTopologyVersion === null) {
+				osdTopologyVersion = data.osd_topology || data.num_osds || data.osdmap;
+				osdStateVersion = data.osd_state || data.osdmap;
+				lastOsdStates = data.osds || {};
+				postFrameMessage({type: 'osd-state', osds: lastOsdStates});
+				return;
+			}
+
+			if ((data.osd_topology || data.num_osds || data.osdmap) !== osdTopologyVersion) {
+				osdTopologyVersion = data.osd_topology || data.num_osds || data.osdmap;
+				osdStateVersion = data.osd_state || data.osdmap;
+				lastOsdStates = data.osds || {};
+				postFrameMessage({type: 'refresh', force: true});
+				return;
+			}
+
+			if ((data.osd_state || data.osdmap) !== osdStateVersion) {
+				osdStateVersion = data.osd_state || data.osdmap;
+				lastOsdStates = data.osds || {};
+				postFrameMessage({type: 'osd-state', osds: lastOsdStates});
+			}
+		})
+		.catch(function() {});
 }
 
 function scheduleRefresh() {
@@ -140,19 +190,25 @@ function scheduleRefresh() {
 	}
 
 	refreshTimer = window.setTimeout(function() {
-		reloadFrame();
+		pollOsdState();
 		scheduleRefresh();
-	}, 60000);
+	}, 10000);
 }
 
 window.addEventListener('DOMContentLoaded', function() {
+	document.getElementById('physical-frame').addEventListener('load', function() {
+		postFrameMessage({type: 'osd-state', osds: lastOsdStates});
+	});
+
 	document.getElementById('physical-depth').addEventListener('change', function() {
-		reloadFrame();
+		reloadFrame(false);
 		scheduleRefresh();
 	});
 
 	document.getElementById('refresh-button').addEventListener('click', function() {
-		reloadFrame();
+		osdTopologyVersion = null;
+		osdStateVersion = null;
+		reloadFrame(true);
 		scheduleRefresh();
 	});
 
@@ -160,7 +216,8 @@ window.addEventListener('DOMContentLoaded', function() {
 		scheduleRefresh();
 	});
 
-	reloadFrame();
+	reloadFrame(false);
+	pollOsdState();
 	scheduleRefresh();
 });
 </script>

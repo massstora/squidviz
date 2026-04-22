@@ -66,7 +66,7 @@ CEPH_COMMAND_TIMEOUT = 30.0
 IOPS_TTL = 2.0
 PGMAP_TTL = 10.0
 OSDMAP_TTL = 10.0
-OSDTREE_TTL = 10.0
+OSDTREE_TTL = 300.0
 PGDUMP_TTL = 10.0
 PGDUMP_TOO_MANY_TTL = 30.0
 
@@ -359,6 +359,7 @@ def get_osdtree_payload() -> dict[str, Any]:
                 children.append(child)
 
         return {
+            "id": node.get("id"),
             "name": node.get("name", str(node_id)),
             "type": node.get("type", "unknown"),
             "status": node.get("status", "unknown"),
@@ -399,9 +400,37 @@ def get_pgmap_payload() -> dict[str, Any]:
 
 
 def get_osdmap_payload() -> dict[str, Any]:
-    status = run_ceph_json(["-s", "-f", "json"])
-    osdmap = status.get("osdmap", {})
+    osd_dump = run_ceph_json(["osd", "dump", "--format=json"])
+    osdmap = osd_dump.get("osdmap", osd_dump)
     version = osdmap.get("epoch")
+    osds = osd_dump.get("osds", osdmap.get("osds", []))
+    osd_states: dict[str, dict[str, Any]] = {}
+
+    if isinstance(osds, list):
+        for osd in osds:
+            osd_id = osd.get("osd", osd.get("id"))
+            if osd_id is None:
+                continue
+
+            is_up = bool(osd.get("up", 0))
+            is_in = bool(osd.get("in", 0))
+            osd_states[str(osd_id)] = {
+                "id": osd_id,
+                "up": is_up,
+                "in": is_in,
+                "status": "up" if is_up and is_in else ("out" if is_up else "down"),
+            }
+
+    state_summary = {
+        "version": version,
+        "states": osd_states,
+    }
+    state_version = hashlib.sha1(json.dumps(state_summary, sort_keys=True).encode("utf-8")).hexdigest()
+    topology_summary = {
+        "num_osds": len(osd_states) if osd_states else osdmap.get("num_osds", 0),
+        "osd_ids": sorted(osd_states.keys()),
+    }
+    topology_version = hashlib.sha1(json.dumps(topology_summary, sort_keys=True).encode("utf-8")).hexdigest()
 
     if version is None:
         summary = {
@@ -412,7 +441,14 @@ def get_osdmap_payload() -> dict[str, Any]:
         }
         version = hashlib.sha1(json.dumps(summary, sort_keys=True).encode("utf-8")).hexdigest()
 
-    return {"ok": True, "osdmap": str(version)}
+    return {
+        "ok": True,
+        "osdmap": str(version),
+        "osd_state": state_version,
+        "osd_topology": topology_version,
+        "num_osds": len(osd_states) if osd_states else osdmap.get("num_osds", 0),
+        "osds": osd_states,
+    }
 
 
 def get_pgdump_payload() -> dict[str, Any]:
@@ -623,8 +659,11 @@ class SquidVizHandler(BaseHTTPRequestHandler):
             if route == "/healthz":
                 status_code, payload = json_response({"ok": True, "service": "squidviz"})
             elif route == "/json/osdtree":
+                force_refresh = query.get("refresh", ["0"])[0] == "1"
                 status_code, payload = json_response(
-                    cached_endpoint("osdtree", "default", get_osdtree_payload)
+                    set_cached_payload("osdtree:default", get_osdtree_payload(), ENDPOINT_TTLS["osdtree"])
+                    if force_refresh
+                    else cached_endpoint("osdtree", "default", get_osdtree_payload)
                 )
             elif route == "/json/pgmap":
                 status_code, payload = json_response(
@@ -700,7 +739,7 @@ def parse_args() -> argparse.Namespace:
         default=PGDUMP_TOO_MANY_TTL,
         help=f"Full PG dump cache lifetime when unhealthy PG count exceeds the visualization cap. Default: {int(PGDUMP_TOO_MANY_TTL)}",
     )
-    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 10")
+    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 300")
     parser.add_argument("--osdmap-ttl", type=float, default=ENDPOINT_TTLS["osdmap"], help="OSD map check cache lifetime in seconds. Default: 10")
     parser.add_argument(
         "--max-unhealthy-pgs",

@@ -364,7 +364,9 @@ body.theme-dark .legend {
 }
 </style>
 <script>
-var osdVersion = null;
+var osdStateVersion = null;
+var osdTopologyVersion = null;
+var lastOsdStates = {};
 var refreshTimer = null;
 
 function messageOrigin() {
@@ -424,14 +426,32 @@ function pollOsdState() {
 			return;
 		}
 
-		if (osdVersion === null) {
-			osdVersion = data.osdmap;
+		if (osdTopologyVersion === null) {
+			osdTopologyVersion = data.osd_topology || data.num_osds || data.osdmap;
+			osdStateVersion = data.osd_state || data.osdmap;
+			lastOsdStates = data.osds || {};
+			postFrameMessage('#osdtree', {
+				type: 'osd-state',
+				osds: lastOsdStates
+			});
 			return;
 		}
 
-		if (data.osdmap !== osdVersion) {
-			osdVersion = data.osdmap;
-			postFrameMessage('#osdtree', {type: 'refresh'});
+		if ((data.osd_topology || data.num_osds || data.osdmap) !== osdTopologyVersion) {
+			osdTopologyVersion = data.osd_topology || data.num_osds || data.osdmap;
+			osdStateVersion = data.osd_state || data.osdmap;
+			lastOsdStates = data.osds || {};
+			postFrameMessage('#osdtree', {type: 'refresh', force: true});
+			return;
+		}
+
+		if ((data.osd_state || data.osdmap) !== osdStateVersion) {
+			osdStateVersion = data.osd_state || data.osdmap;
+			lastOsdStates = data.osds || {};
+			postFrameMessage('#osdtree', {
+				type: 'osd-state',
+				osds: lastOsdStates
+			});
 		}
 	});
 }
@@ -465,11 +485,17 @@ $(function() {
 	applyTheme(darkMode);
 
 	$('#upd-physical').on('click', function() {
-		postFrameMessage('#osdtree', {type: 'refresh'});
+		osdTopologyVersion = null;
+		osdStateVersion = null;
+		postFrameMessage('#osdtree', {type: 'refresh', force: true});
 	});
 
 	$('#osdtree').on('load', function() {
 		updatePhysicalFrameDepth();
+		postFrameMessage('#osdtree', {
+			type: 'osd-state',
+			osds: lastOsdStates
+		});
 	});
 
 	$('#pgmap').on('load', function() {

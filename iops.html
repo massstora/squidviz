@@ -155,6 +155,23 @@ svg {
 	text-transform: none;
 }
 
+.latency-warning {
+	display: none;
+	color: #b51a00;
+	font-size: 10px;
+	font-weight: 800;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.theme-dark .latency-warning {
+	color: #ff6b5f;
+}
+
+.warning-icon {
+	margin-right: 4px;
+}
+
 .message {
 	padding: 24px;
 	color: #58707a;
@@ -188,6 +205,9 @@ svg {
 	<div class="latency-box" id="latency-box">
 		<div>Avg OSD Latency</div>
 		<div class="latency-value" id="latency-value">--</div>
+		<div class="latency-warning" id="latency-warning">
+			<span class="warning-icon">&#9650;</span><span id="latency-warning-text">High latency</span>
+		</div>
 	</div>
 </div>
 <div class="message" id="message">Loading IOPS history...</div>
@@ -232,6 +252,8 @@ var currentMode = 'layered';
 var plot;
 var barWidth = 0;
 var currentLatencyLabel = '--';
+var latencyWarningCounts = {};
+var latencyWarningPolls = 3;
 var latencyEnabled = false;
 
 function messageOrigin() {
@@ -288,6 +310,69 @@ function updateLatency(commitLatency, applyLatency) {
 
 	currentLatencyLabel = label;
 	document.getElementById('latency-value').textContent = label;
+}
+
+function osdWarningId(entry) {
+	if (entry.id === null || typeof entry.id === 'undefined') {
+		return 'unknown';
+	}
+
+	return String(entry.id);
+}
+
+function formatLatencyOsd(entry) {
+	var osdId = osdWarningId(entry);
+	var latency = typeof entry.max_latency_ms === 'number' ? entry.max_latency_ms.toFixed(1) + 'ms' : 'over threshold';
+	return 'osd.' + osdId + ' ' + latency;
+}
+
+function clearLatencyWarning() {
+	latencyWarningCounts = {};
+	document.getElementById('latency-warning').style.display = 'none';
+	document.getElementById('latency-warning-text').textContent = 'High latency';
+}
+
+function updateLatencyWarning(highLatencyOsds, thresholdMs) {
+	var currentIds = {};
+	var confirmed = [];
+	var entries = Array.isArray(highLatencyOsds) ? highLatencyOsds : [];
+
+	entries.forEach(function(entry) {
+		var id = osdWarningId(entry);
+		currentIds[id] = true;
+		latencyWarningCounts[id] = (latencyWarningCounts[id] || 0) + 1;
+
+		if (latencyWarningCounts[id] >= latencyWarningPolls) {
+			confirmed.push(entry);
+		}
+	});
+
+	Object.keys(latencyWarningCounts).forEach(function(id) {
+		if (!currentIds[id]) {
+			delete latencyWarningCounts[id];
+		}
+	});
+
+	if (confirmed.length === 0) {
+		document.getElementById('latency-warning').style.display = 'none';
+		return;
+	}
+
+	confirmed.sort(function(a, b) {
+		return (b.max_latency_ms || 0) - (a.max_latency_ms || 0);
+	});
+
+	var shown = confirmed.slice(0, 3).map(formatLatencyOsd);
+	var extraCount = confirmed.length - shown.length;
+	var thresholdLabel = typeof thresholdMs === 'number' ? thresholdMs.toFixed(0) + 'ms' : 'threshold';
+	var message = 'High latency > ' + thresholdLabel + ': ' + shown.join(', ');
+
+	if (extraCount > 0) {
+		message += ' +' + extraCount + ' more';
+	}
+
+	document.getElementById('latency-warning-text').textContent = message;
+	document.getElementById('latency-warning').style.display = 'block';
 }
 
 function iopsEndpointUrl() {
@@ -560,6 +645,9 @@ function tick() {
 		currentTotalOps = totalOps;
 		if (latencyEnabled) {
 			updateLatency(result.commit_latency_ms, result.apply_latency_ms);
+			updateLatencyWarning(result.high_latency_osds, result.latency_warning_threshold_ms);
+		} else {
+			clearLatencyWarning();
 		}
 		readData.push(readOps);
 		readData.shift();
@@ -582,6 +670,7 @@ document.getElementById('latency-toggle').addEventListener('change', function(ev
 	latencyEnabled = event.target.checked;
 	currentLatencyLabel = '--';
 	document.getElementById('latency-value').textContent = currentLatencyLabel;
+	clearLatencyWarning();
 	updateLatencyVisibility();
 });
 document.getElementById('viz-mode').addEventListener('change', function(event) {

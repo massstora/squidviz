@@ -116,6 +116,7 @@ PGDUMP_TTL = 10.0
 PGDUMP_TOO_MANY_TTL = 30.0
 
 MAX_UNHEALTHY_PGS = 2500
+LATENCY_WARNING_MS = 20.0
 ```
 
 If the Python service runs on the same machine as the web server, keep `SERVICE_HOST` set to `127.0.0.1`.
@@ -135,6 +136,8 @@ python3 squidviz_service.py
 ```
 
 The backend caches command output so multiple wallboards do not all run the same Ceph commands at once. Cache timing is controlled by the `*_TTL` settings in [squidviz_service.py].
+
+When the Latency checkbox is enabled, SquidViz also checks OSD latency against `LATENCY_WARNING_MS`. If the same OSD stays above that threshold for three IOPS polls, the IOPS panel shows a small red warning.
 
 If more than `MAX_UNHEALTHY_PGS` PGs are unhealthy, SquidViz returns a summary and the affected pools instead of trying to send and render every unhealthy PG in the logical view. The Python service also keeps that capped `/json/pgdump` response cached for at least `PGDUMP_TOO_MANY_TTL` seconds. This keeps very large unhealthy clusters from overwhelming the browser or repeatedly running full PG dumps while still showing which pools are involved.
 

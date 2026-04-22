@@ -173,12 +173,16 @@ function stateColor(state) {
 		return '#000000';
 	}
 
-	if (state === 'creating') {
-		return '#80d2dc';
+	if (state.indexOf('backfilling') !== -1) {
+		return '#ff6b00';
 	}
 
-	if (state.indexOf('deep') !== -1 && state.indexOf('scrub') !== -1) {
-		return '#3b82f6';
+	if (state.indexOf('down') !== -1) {
+		return '#b51a00';
+	}
+
+	if (state === 'creating') {
+		return '#80d2dc';
 	}
 
 	if (state.indexOf('scrubbing') !== -1 || state.indexOf('scrub') !== -1) {
@@ -217,11 +221,65 @@ function stateColor(state) {
 		return '#00ac08';
 	}
 
-	if (state.indexOf('active+clean') !== -1) {
-		return '#00de00';
+	return '#000000';
+}
+
+function hasBackfillState(d) {
+	if (d.state && d.state.indexOf('backfilling') !== -1) {
+		return true;
 	}
 
-	return '#000000';
+	if (d.state_counts) {
+		for (var state in d.state_counts) {
+			if (Object.prototype.hasOwnProperty.call(d.state_counts, state) && state.indexOf('backfilling') !== -1) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+function pulseBackfill(selection) {
+	selection
+		.transition()
+		.duration(900)
+		.style('opacity', 0.45)
+		.transition()
+		.duration(900)
+		.style('opacity', 1)
+		.each('end', function() {
+			pulseBackfill(d3.select(this));
+		});
+}
+
+function hasDownState(d) {
+	if (d.state && d.state.indexOf('down') !== -1) {
+		return true;
+	}
+
+	if (d.state_counts) {
+		for (var state in d.state_counts) {
+			if (Object.prototype.hasOwnProperty.call(d.state_counts, state) && state.indexOf('down') !== -1) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+function flashDown(selection) {
+	selection
+		.transition()
+		.duration(260)
+		.style('opacity', 0.2)
+		.transition()
+		.duration(260)
+		.style('opacity', 1)
+		.each('end', function() {
+			flashDown(d3.select(this));
+		});
 }
 
 function computeTextRotation(d) {
@@ -309,6 +367,9 @@ function renderChart(root) {
 			}
 		})
 		.on('click', click);
+
+	pulseBackfill(path.filter(hasBackfillState));
+	flashDown(path.filter(hasDownState));
 
 	var text = g.append('text')
 		.attr('transform', function(d) {

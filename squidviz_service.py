@@ -74,6 +74,10 @@ PGDUMP_TOO_MANY_TTL = 30.0
 # SquidViz returns affected pools and state counts instead of every PG.
 MAX_UNHEALTHY_PGS = 2500
 
+# Optional latency warning threshold. This is only used when a wallboard has
+# the Latency checkbox enabled, which is the only time ceph osd perf is called.
+LATENCY_WARNING_MS = 20.0
+
 # How long a request waits when another thread is already refreshing the same
 # expired cache entry and no stale value exists yet.
 REFRESH_WAIT_SECONDS = 5.0
@@ -134,6 +138,15 @@ def clean_subprocess_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace").strip()
     return value.strip()
+
+
+def to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def annotate_cache_payload(payload: dict[str, Any], expires_at: float, stale: bool) -> dict[str, Any]:
@@ -522,6 +535,7 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
     bytes_write = float(pgmap.get("write_bytes_sec", 0))
     commit_latency_ms = None
     apply_latency_ms = None
+    high_latency_osds: list[dict[str, Any]] = []
 
     if include_latency:
         osd_perf = run_ceph_json(["osd", "perf", "--format=json"], optional=True)
@@ -542,16 +556,31 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
                 perf_stats = entry.get("perf_stats", {})
                 commit_value = entry.get("commit_latency_ms")
                 apply_value = entry.get("apply_latency_ms")
+                osd_id = entry.get("id", entry.get("osd"))
 
                 if commit_value is None:
                     commit_value = perf_stat.get("commit_latency_ms", perf_stats.get("commit_latency_ms"))
                 if apply_value is None:
                     apply_value = perf_stat.get("apply_latency_ms", perf_stats.get("apply_latency_ms"))
 
+                commit_value = to_float_or_none(commit_value)
+                apply_value = to_float_or_none(apply_value)
+
                 if commit_value is not None or apply_value is not None:
-                    commit_sum += float(commit_value or 0.0)
-                    apply_sum += float(apply_value or 0.0)
+                    commit_sum += commit_value or 0.0
+                    apply_sum += apply_value or 0.0
                     count += 1
+                    max_latency = max(value for value in [commit_value, apply_value] if value is not None)
+
+                    if max_latency > LATENCY_WARNING_MS:
+                        high_latency_osds.append(
+                            {
+                                "id": osd_id,
+                                "commit_latency_ms": commit_value,
+                                "apply_latency_ms": apply_value,
+                                "max_latency_ms": max_latency,
+                            }
+                        )
 
             if count > 0:
                 commit_latency_ms = commit_sum / count
@@ -567,6 +596,8 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
         "latency_enabled": include_latency,
         "commit_latency_ms": commit_latency_ms,
         "apply_latency_ms": apply_latency_ms,
+        "latency_warning_threshold_ms": LATENCY_WARNING_MS,
+        "high_latency_osds": high_latency_osds,
     }
 
 
@@ -741,6 +772,7 @@ def main() -> None:
     LOG.info("Using cache TTLs: %s", ENDPOINT_TTLS)
     LOG.info("Using PG dump too-many TTL: %s", PGDUMP_TOO_MANY_TTL)
     LOG.info("Using max unhealthy PG visualization limit: %s", MAX_UNHEALTHY_PGS)
+    LOG.info("Using OSD latency warning threshold: %sms", LATENCY_WARNING_MS)
 
     server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)
     try:

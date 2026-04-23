@@ -61,8 +61,10 @@ var resizeTimer = null;
 var query = window.location.search || '';
 var depthMatch = query.match(/(?:\?|&)depth=([^&]+)/);
 var themeMatch = query.match(/(?:\?|&)theme=([^&]+)/);
+var affectedLimitMatch = query.match(/(?:\?|&)affectedLimit=([^&]+)/);
 var defaultDepth = depthMatch ? parseInt(decodeURIComponent(depthMatch[1]), 10) : 2;
 var currentTheme = themeMatch ? decodeURIComponent(themeMatch[1]) : 'light';
+var maxAffectedEndpoints = affectedLimitMatch ? parseInt(decodeURIComponent(affectedLimitMatch[1]), 10) : 20;
 var forceInitialRefresh = /(?:\?|&)refresh=1(?:&|$)/.test(query);
 var currentData = null;
 
@@ -76,6 +78,10 @@ function isExpectedMessage(event) {
 
 if (isNaN(defaultDepth) || defaultDepth < 1) {
 	defaultDepth = 2;
+}
+
+if (isNaN(maxAffectedEndpoints) || maxAffectedEndpoints < 1) {
+	maxAffectedEndpoints = 20;
 }
 
 if (currentTheme === 'dark') {
@@ -150,14 +156,17 @@ function markHealth(node) {
 	var children = node.children || [];
 	var selfAffected = node.type === 'osd' && node.status !== 'up';
 	var descendantAffected = false;
+	var affectedEndpointCount = selfAffected ? 1 : 0;
 
 	children.forEach(function(child) {
 		if (markHealth(child)) {
 			descendantAffected = true;
 		}
+		affectedEndpointCount += child.affectedEndpointCount || 0;
 	});
 
 	node.hasIssue = selfAffected || descendantAffected;
+	node.affectedEndpointCount = affectedEndpointCount;
 	return node.hasIssue;
 }
 
@@ -201,8 +210,29 @@ function applyDefaultCollapse(node, depth) {
 		return;
 	}
 
+	if (node.hasIssue) {
+		var childrenAreOsds = node.children.every(function(child) { return child.type === 'osd'; });
+		if (childrenAreOsds && node.affectedEndpointCount >= maxAffectedEndpoints) {
+			node._children = node.children;
+			node.children = null;
+			return;
+		}
+	}
+
 	node.children.forEach(function(child) {
-		applyDefaultCollapse(child, depth + 1);
+		var childChildren = child.children || [];
+		var childChildrenAreOsds = childChildren.length > 0 && childChildren.every(function(grandchild) {
+			return grandchild.type === 'osd';
+		});
+		var oversizedChild = childChildrenAreOsds && child.affectedEndpointCount >= maxAffectedEndpoints;
+		var veryLargeChild = depth >= 1 && child.affectedEndpointCount > maxAffectedEndpoints * maxAffectedEndpoints;
+
+		if (child.hasIssue && (oversizedChild || veryLargeChild)) {
+			child._children = child.children;
+			child.children = null;
+		} else {
+			applyDefaultCollapse(child, depth + 1);
+		}
 	});
 
 	if (defaultDepth !== 99 && depth >= defaultDepth && !node.hasIssue) {
@@ -400,8 +430,12 @@ window.addEventListener('message', function(event) {
 
 	if (data.type === 'config') {
 		var parsedDepth = parseInt(data.depth, 10);
+		var parsedAffectedLimit = parseInt(data.affectedLimit, 10);
 		if (!isNaN(parsedDepth) && parsedDepth >= 1) {
 			defaultDepth = parsedDepth;
+		}
+		if (!isNaN(parsedAffectedLimit) && parsedAffectedLimit >= 1) {
+			maxAffectedEndpoints = parsedAffectedLimit;
 		}
 		applyTheme(data.theme);
 	}

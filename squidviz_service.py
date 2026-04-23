@@ -66,7 +66,7 @@ CEPH_COMMAND_TIMEOUT = 30.0
 IOPS_TTL = 2.0
 PGMAP_TTL = 10.0
 OSDMAP_TTL = 10.0
-OSDTREE_TTL = 300.0
+OSDTREE_TTL = 600.0
 PGDUMP_TTL = 10.0
 PGDUMP_TOO_MANY_TTL = 30.0
 
@@ -739,7 +739,7 @@ def parse_args() -> argparse.Namespace:
         default=PGDUMP_TOO_MANY_TTL,
         help=f"Full PG dump cache lifetime when unhealthy PG count exceeds the visualization cap. Default: {int(PGDUMP_TOO_MANY_TTL)}",
     )
-    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 300")
+    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 600")
     parser.add_argument("--osdmap-ttl", type=float, default=ENDPOINT_TTLS["osdmap"], help="OSD map check cache lifetime in seconds. Default: 10")
     parser.add_argument(
         "--max-unhealthy-pgs",

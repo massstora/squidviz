@@ -114,7 +114,7 @@ CEPH_COMMAND_TIMEOUT = 30.0
 IOPS_TTL = 2.0
 PGMAP_TTL = 10.0
 OSDMAP_TTL = 10.0
-OSDTREE_TTL = 300.0
+OSDTREE_TTL = 600.0
 PGDUMP_TTL = 10.0
 PGDUMP_TOO_MANY_TTL = 30.0
 
@@ -141,7 +141,7 @@ python3 squidviz_service.py
 
 The backend caches command output so multiple wallboards do not all run the same Ceph commands at once. Cache timing is controlled by the `*_TTL` settings in [squidviz_service.py].
 
-The CRUSH failure-domain topology uses a longer `OSDTREE_TTL` because bucket/host/OSD placement changes are usually rare. OSD up/down/in/out state is checked through the lighter `/json/osdmap` path, so failure-domain colors can update without repeatedly rebuilding the full tree.
+The CRUSH failure-domain topology uses a longer `OSDTREE_TTL` because bucket/host/OSD placement changes are usually rare. OSD up/down/in/out state is checked through the lighter `/json/osdmap` path, so failure-domain colors can update without repeatedly rebuilding the full tree. The failure-domain view also has an Affected Limit selector, defaulting to 20 affected OSDs; large affected branches collapse to the containing failure domain instead of expanding thousands of OSD nodes.
 
 When the Latency checkbox is enabled, SquidViz also checks OSD latency against `LATENCY_WARNING_MS`. If the same OSD stays above that threshold for three IOPS polls, the IOPS panel shows a small red warning.
 

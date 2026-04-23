@@ -394,10 +394,12 @@ function postFrameMessage(selector, message) {
 
 function updatePhysicalFrameDepth() {
 	var depth = $('#physical-depth').val();
+	var affectedLimit = $('#affected-limit').val();
 	var theme = $('body').hasClass('theme-dark') ? 'dark' : 'light';
 	postFrameMessage('#osdtree', {
 		type: 'config',
 		depth: depth,
+		affectedLimit: affectedLimit,
 		theme: theme
 	});
 }
@@ -515,6 +517,10 @@ $(function() {
 		updatePhysicalFrameDepth();
 	});
 
+	$('#affected-limit').on('change', function() {
+		updatePhysicalFrameDepth();
+	});
+
 	$('#show-physical').on('change', function() {
 		var showPhysical = $(this).is(':checked');
 		$('#dashboard').toggleClass('dashboard--logical-only', !showPhysical);
@@ -584,6 +590,18 @@ $(function() {
 							<option value="3">3</option>
 							<option value="4">4</option>
 							<option value="99">All</option>
+						</select>
+					</label>
+					<label class="toggle" for="affected-limit">
+						<span>Affected Limit</span>
+						<select id="affected-limit" name="affected-limit">
+							<option value="20" selected>20 OSDs</option>
+							<option value="50">50 OSDs</option>
+							<option value="100">100 OSDs</option>
+							<option value="250">250 OSDs</option>
+							<option value="500">500 OSDs</option>
+							<option value="1000">1000 OSDs</option>
+							<option value="999999">All</option>
 						</select>
 					</label>
 					<label class="toggle" for="upd-logical">

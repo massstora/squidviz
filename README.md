@@ -119,6 +119,7 @@ PGDUMP_TTL = 10.0
 PGDUMP_TOO_MANY_TTL = 30.0
 
 MAX_UNHEALTHY_PGS = 2500
+AFFECTED_TREE_ENDPOINT_LIMIT = 20
 LATENCY_WARNING_MS = 20.0
 REFRESH_WAIT_SECONDS = 5.0
 ```
@@ -141,7 +142,7 @@ python3 squidviz_service.py
 
 The backend caches command output so multiple wallboards do not all run the same Ceph commands at once. Cache timing is controlled by the `*_TTL` settings in [squidviz_service.py].
 
-The CRUSH failure-domain topology uses a longer `OSDTREE_TTL` because bucket/host/OSD placement changes are usually rare. OSD up/down/in/out state is checked through the lighter `/json/osdmap` path, so failure-domain colors can update without repeatedly rebuilding the full tree. The failure-domain view also has an Affected Limit selector, defaulting to 20 affected OSDs; large affected branches collapse to the containing failure domain instead of expanding thousands of OSD nodes.
+The CRUSH failure-domain topology uses a longer `OSDTREE_TTL` because bucket/host/OSD placement changes are usually rare. OSD up/down/in/out state is checked through the lighter `/json/osdmap` path, so failure-domain colors can update without repeatedly rebuilding the full tree. The failure-domain view reads its default Affected Limit from `AFFECTED_TREE_ENDPOINT_LIMIT`; large affected branches collapse to the containing failure domain instead of expanding thousands of OSD nodes.
 
 When the Latency checkbox is enabled, SquidViz also checks OSD latency against `LATENCY_WARNING_MS`. If the same OSD stays above that threshold for three IOPS polls, the IOPS panel shows a small red warning.
 
@@ -225,12 +226,14 @@ Then test the Python service directly from the data-service host:
 
 ```bash
 curl http://127.0.0.1:8081/healthz
+curl http://127.0.0.1:8081/json/config
 curl http://127.0.0.1:8081/json/pgmap
 ```
 
 Finally, test through the web server reverse proxy. This is the same path the browser will use:
 
 ```bash
+curl http://your-squidviz-webserver/json/config
 curl http://your-squidviz-webserver/json/pgmap
 curl http://your-squidviz-webserver/json/osdtree
 ```

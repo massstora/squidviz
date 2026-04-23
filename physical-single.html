@@ -143,6 +143,32 @@ function reloadFrame(forceRefresh) {
 	frame.src = buildSrc(forceRefresh);
 }
 
+function ensureAffectedLimitOption(value) {
+	var normalized = String(value);
+	var select = document.getElementById('affected-limit');
+
+	if (!select.querySelector('option[value="' + normalized + '"]')) {
+		var option = document.createElement('option');
+		option.value = normalized;
+		option.textContent = value >= 999999 ? 'All' : normalized + ' OSDs';
+		select.insertBefore(option, select.firstChild);
+	}
+}
+
+function loadServiceConfig() {
+	fetch(squidvizDataUrl('/json/config'), {cache: 'no-store'})
+		.then(function(response) { return response.json(); })
+		.then(function(data) {
+			var affectedLimit = parseInt(data.affected_tree_endpoint_limit, 10);
+			if (data.ok && !isNaN(affectedLimit) && affectedLimit >= 1) {
+				ensureAffectedLimitOption(affectedLimit);
+				document.getElementById('affected-limit').value = String(affectedLimit);
+				reloadFrame(false);
+			}
+		})
+		.catch(function() {});
+}
+
 function postFrameMessage(message) {
 	var frame = document.getElementById('physical-frame');
 	if (frame && frame.contentWindow) {
@@ -223,6 +249,7 @@ window.addEventListener('DOMContentLoaded', function() {
 	});
 
 	reloadFrame(false);
+	loadServiceConfig();
 	pollOsdState();
 	scheduleRefresh();
 });

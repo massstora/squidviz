@@ -476,6 +476,34 @@ function refreshTick() {
 	scheduleRefreshTick();
 }
 
+function ensureAffectedLimitOption(value) {
+	var normalized = String(value);
+	var $select = $('#affected-limit');
+
+	if ($select.find('option[value="' + normalized + '"]').length === 0) {
+		$select.prepend($('<option>', {
+			value: normalized,
+			text: value >= 999999 ? 'All' : normalized + ' OSDs'
+		}));
+	}
+}
+
+function loadServiceConfig() {
+	$.ajax({
+		url: squidvizDataUrl('/json/config'),
+		type: 'GET',
+		dataType: 'json',
+		cache: false
+	}).done(function(data) {
+		var affectedLimit = parseInt(data.affected_tree_endpoint_limit, 10);
+		if (data.ok && !isNaN(affectedLimit) && affectedLimit >= 1) {
+			ensureAffectedLimitOption(affectedLimit);
+			$('#affected-limit').val(String(affectedLimit));
+			updatePhysicalFrameDepth();
+		}
+	});
+}
+
 function currentThemeName() {
 	return $('body').hasClass('theme-dark') ? 'dark' : 'light';
 }
@@ -559,6 +587,7 @@ $(function() {
 
 	updateStatus('Starting refresh loop', true);
 	updatePhysicalFrameDepth();
+	loadServiceConfig();
 	postFrameMessage('#pgmap', {type: 'tick'});
 	pollOsdState();
 	scheduleRefreshTick();

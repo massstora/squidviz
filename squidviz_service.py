@@ -74,6 +74,11 @@ PGDUMP_TOO_MANY_TTL = 30.0
 # SquidViz returns affected pools and state counts instead of every PG.
 MAX_UNHEALTHY_PGS = 2500
 
+# Default frontend limit for auto-expanding affected failure-domain branches.
+# If a branch contains this many affected OSDs or more, the UI collapses it at
+# a useful failure-domain boundary instead of expanding every OSD endpoint.
+AFFECTED_TREE_ENDPOINT_LIMIT = 20
+
 # Optional latency warning threshold. This is only used when a wallboard has
 # the Latency checkbox enabled, which is the only time ceph osd perf is called.
 LATENCY_WARNING_MS = 20.0
@@ -637,6 +642,23 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
+def get_config_payload() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "affected_tree_endpoint_limit": AFFECTED_TREE_ENDPOINT_LIMIT,
+        "cache_ttls": {
+            "iops": ENDPOINT_TTLS["iops"],
+            "pgmap": ENDPOINT_TTLS["pgmap"],
+            "osdmap": ENDPOINT_TTLS["osdmap"],
+            "osdtree": ENDPOINT_TTLS["osdtree"],
+            "pgdump": ENDPOINT_TTLS["pgdump"],
+            "pgdump_too_many": PGDUMP_TOO_MANY_TTL,
+        },
+        "max_unhealthy_pgs": MAX_UNHEALTHY_PGS,
+        "latency_warning_ms": LATENCY_WARNING_MS,
+    }
+
+
 class SquidVizHandler(BaseHTTPRequestHandler):
     server_version = "SquidVizService/0.1"
 
@@ -658,6 +680,8 @@ class SquidVizHandler(BaseHTTPRequestHandler):
         try:
             if route == "/healthz":
                 status_code, payload = json_response({"ok": True, "service": "squidviz"})
+            elif route == "/json/config":
+                status_code, payload = json_response(get_config_payload())
             elif route == "/json/osdtree":
                 force_refresh = query.get("refresh", ["0"])[0] == "1"
                 status_code, payload = json_response(
@@ -747,6 +771,12 @@ def parse_args() -> argparse.Namespace:
         default=MAX_UNHEALTHY_PGS,
         help=f"Maximum unhealthy PGs to include in the logical visualization. Default: {MAX_UNHEALTHY_PGS}",
     )
+    parser.add_argument(
+        "--affected-tree-endpoint-limit",
+        type=int,
+        default=AFFECTED_TREE_ENDPOINT_LIMIT,
+        help=f"Default affected OSD expansion limit for the failure-domain UI. Default: {AFFECTED_TREE_ENDPOINT_LIMIT}",
+    )
     return parser.parse_args()
 
 
@@ -786,12 +816,15 @@ def apply_ceph_overrides(args: argparse.Namespace) -> None:
 
 
 def apply_visualization_limits(args: argparse.Namespace) -> None:
-    global MAX_UNHEALTHY_PGS
+    global AFFECTED_TREE_ENDPOINT_LIMIT, MAX_UNHEALTHY_PGS
 
     if args.max_unhealthy_pgs < 1:
         raise ValueError("max unhealthy PG limit must be at least 1.")
+    if args.affected_tree_endpoint_limit < 1:
+        raise ValueError("affected tree endpoint limit must be at least 1.")
 
     MAX_UNHEALTHY_PGS = args.max_unhealthy_pgs
+    AFFECTED_TREE_ENDPOINT_LIMIT = args.affected_tree_endpoint_limit
 
 
 def main() -> None:
@@ -811,6 +844,7 @@ def main() -> None:
     LOG.info("Using cache TTLs: %s", ENDPOINT_TTLS)
     LOG.info("Using PG dump too-many TTL: %s", PGDUMP_TOO_MANY_TTL)
     LOG.info("Using max unhealthy PG visualization limit: %s", MAX_UNHEALTHY_PGS)
+    LOG.info("Using affected tree endpoint limit: %s", AFFECTED_TREE_ENDPOINT_LIMIT)
     LOG.info("Using OSD latency warning threshold: %sms", LATENCY_WARNING_MS)
 
     server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)

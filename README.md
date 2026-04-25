@@ -97,7 +97,7 @@ If you run the service as another user, adjust the group accordingly.
 
 Edit the clearly marked `SquidViz Service Settings` block near the top of [squidviz_service.py]. This is the normal configuration method.
 
-The defaults match the recommended read-only Ceph client:
+The defaults ship with one cluster named `prod`. Cluster-specific Ceph settings live directly inside the `CLUSTERS` block:
 
 ```python
 SERVICE_HOST = "127.0.0.1"
@@ -106,10 +106,18 @@ CORS_ORIGIN = "*"
 LOG_LEVEL = "INFO"
 EXPOSE_ERROR_DETAILS = False
 
-CEPH_BIN = "/usr/bin/ceph"
-CEPH_NAME = "client.squidviz"
-CEPH_KEYRING = "/etc/ceph/ceph.client.squidviz.keyring"
 CEPH_COMMAND_TIMEOUT = 30.0
+
+DEFAULT_CLUSTER = "prod"
+CLUSTERS = {
+    "prod": {
+        "label": "prod",
+        "ceph_bin": "/usr/bin/ceph",
+        "ceph_conf": "/etc/ceph/ceph.conf",
+        "ceph_name": "client.squidviz",
+        "ceph_keyring": "/etc/ceph/ceph.client.squidviz.keyring",
+    },
+}
 
 IOPS_TTL = 2.0
 PGMAP_TTL = 10.0
@@ -124,6 +132,8 @@ LATENCY_WARNING_MS = 20.0
 REFRESH_WAIT_SECONDS = 5.0
 ```
 
+To add more clusters, add more entries to `CLUSTERS` with their own `ceph.conf`, client name, and keyring. The main dashboard reads that cluster list from `/json/config` and shows it as a dropdown.
+
 If the Python service runs on the same machine as the web server, keep `SERVICE_HOST` set to `127.0.0.1`.
 
 If the Python service runs on a separate internal Ceph host, set:
@@ -134,7 +144,7 @@ SERVICE_HOST = "0.0.0.0"
 
 and allow only the SquidViz web server through your firewall.
 
-After the settings are correct, start the service. No command-line options are required for a normal deployment:
+After the settings are correct, start the service:
 
 ```bash
 python3 squidviz_service.py

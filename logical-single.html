@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
+<script>
+var clusterMatch = (window.location.search || '').match(/(?:\?|&)cluster=([^&]+)/);
+var clusterQuery = clusterMatch ? '&cluster=' + encodeURIComponent(decodeURIComponent(clusterMatch[1])) : '';
+</script>
 <style>
 html, body {
 	margin: 0;
@@ -21,6 +25,9 @@ iframe {
 </style>
 </head>
 <body>
-<iframe src="logical.html?mode=single" title="Logical Ceph PG view"></iframe>
+<iframe src="" id="single-logical-frame" title="Logical Ceph PG view"></iframe>
+<script>
+document.getElementById('single-logical-frame').src = 'logical.html?mode=single' + clusterQuery;
+</script>
 </body>
 </html>

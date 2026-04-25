@@ -134,7 +134,10 @@ function messageOrigin() {
 function buildSrc(forceRefresh) {
 	var depth = document.getElementById('physical-depth').value;
 	var affectedLimit = document.getElementById('affected-limit').value;
-	var src = 'physical.html?depth=' + encodeURIComponent(depth) + '&affectedLimit=' + encodeURIComponent(affectedLimit);
+	var cluster = window.squidvizGetCluster();
+	var src = 'physical.html?depth=' + encodeURIComponent(depth) +
+		'&affectedLimit=' + encodeURIComponent(affectedLimit) +
+		'&cluster=' + encodeURIComponent(cluster);
 	return forceRefresh ? src + '&refresh=1' : src;
 }
 

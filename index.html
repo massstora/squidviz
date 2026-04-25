@@ -368,6 +368,12 @@ var osdStateVersion = null;
 var osdTopologyVersion = null;
 var lastOsdStates = {};
 var refreshTimer = null;
+var currentCluster = clusterFromQuery() || window.localStorage.getItem('squidviz-cluster') || 'prod';
+
+function clusterFromQuery() {
+	var match = (window.location.search || '').match(/(?:\?|&)cluster=([^&]+)/);
+	return match ? decodeURIComponent(match[1]) : '';
+}
 
 function messageOrigin() {
 	return window.location.origin && window.location.origin !== 'null' ? window.location.origin : '*';
@@ -389,6 +395,58 @@ function postFrameMessage(selector, message) {
 	var frame = $(selector).get(0);
 	if (frame && frame.contentWindow) {
 		frame.contentWindow.postMessage(message, messageOrigin());
+	}
+}
+
+function ensureClusterOption(clusterId, label) {
+	var normalized = String(clusterId || '');
+	var $select = $('#cluster-select');
+
+	if (!$select.find('option[value="' + normalized + '"]').length) {
+		$select.append($('<option>', {
+			value: normalized,
+			text: label || normalized
+		}));
+	}
+}
+
+function buildLogicalFrameSrc() {
+	return 'logical.html?theme=' + encodeURIComponent(currentThemeName()) + '&cluster=' + encodeURIComponent(currentCluster);
+}
+
+function buildPhysicalFrameSrc() {
+	return 'physical.html?depth=' + encodeURIComponent($('#physical-depth').val()) +
+		'&affectedLimit=' + encodeURIComponent($('#affected-limit').val()) +
+		'&theme=' + encodeURIComponent(currentThemeName()) +
+		'&cluster=' + encodeURIComponent(currentCluster);
+}
+
+function buildIopsFrameSrc() {
+	return 'iops.html?theme=' + encodeURIComponent(currentThemeName()) + '&cluster=' + encodeURIComponent(currentCluster);
+}
+
+function reloadFrames() {
+	$('#pgmap').attr('src', buildLogicalFrameSrc());
+	$('#osdtree').attr('src', buildPhysicalFrameSrc());
+	$('#iopsgraph').attr('src', buildIopsFrameSrc());
+}
+
+function setCurrentCluster(clusterId, shouldReload) {
+	if (!clusterId) {
+		return;
+	}
+
+	currentCluster = String(clusterId);
+	window.squidvizSetCluster(currentCluster);
+	window.localStorage.setItem('squidviz-cluster', currentCluster);
+	$('#cluster-select').val(currentCluster);
+	osdTopologyVersion = null;
+	osdStateVersion = null;
+	lastOsdStates = {};
+
+	if (shouldReload !== false) {
+		reloadFrames();
+		pollOsdState();
 	}
 }
 
@@ -495,12 +553,31 @@ function loadServiceConfig() {
 		dataType: 'json',
 		cache: false
 	}).done(function(data) {
+		if (!data.ok) {
+			return;
+		}
+
+		(data.clusters || []).forEach(function(cluster) {
+			ensureClusterOption(cluster.id, cluster.label);
+		});
+
+		var availableClusters = (data.clusters || []).map(function(cluster) { return cluster.id; });
+		var requestedCluster = clusterFromQuery();
+		var savedCluster = window.localStorage.getItem('squidviz-cluster');
+		var defaultCluster = data.default_cluster || 'prod';
+		var selectedCluster = requestedCluster || savedCluster || defaultCluster;
+
+		if (availableClusters.length && availableClusters.indexOf(selectedCluster) === -1) {
+			selectedCluster = defaultCluster;
+		}
+
 		var affectedLimit = parseInt(data.affected_tree_endpoint_limit, 10);
-		if (data.ok && !isNaN(affectedLimit) && affectedLimit >= 1) {
+		if (!isNaN(affectedLimit) && affectedLimit >= 1) {
 			ensureAffectedLimitOption(affectedLimit);
 			$('#affected-limit').val(String(affectedLimit));
-			updatePhysicalFrameDepth();
 		}
+
+		setCurrentCluster(selectedCluster, true);
 	});
 }
 
@@ -509,6 +586,7 @@ function currentThemeName() {
 }
 
 $(function() {
+	window.squidvizSetCluster(currentCluster);
 	var savedTheme = window.localStorage.getItem('squidviz-theme');
 	var darkMode = savedTheme === 'dark';
 	$('#dark-mode').prop('checked', darkMode);
@@ -549,6 +627,10 @@ $(function() {
 		updatePhysicalFrameDepth();
 	});
 
+	$('#cluster-select').on('change', function() {
+		setCurrentCluster($(this).val(), true);
+	});
+
 	$('#show-physical').on('change', function() {
 		var showPhysical = $(this).is(':checked');
 		$('#dashboard').toggleClass('dashboard--logical-only', !showPhysical);
@@ -586,9 +668,8 @@ $(function() {
 	});
 
 	updateStatus('Starting refresh loop', true);
-	updatePhysicalFrameDepth();
+	reloadFrames();
 	loadServiceConfig();
-	postFrameMessage('#pgmap', {type: 'tick'});
 	pollOsdState();
 	scheduleRefreshTick();
 });
@@ -606,6 +687,12 @@ $(function() {
 			</div>
 			<div class="toolbar">
 				<div class="toolbar-group">
+					<label class="toggle" for="cluster-select">
+						<span>Cluster</span>
+						<select id="cluster-select" name="cluster-select">
+							<option value="prod" selected>prod</option>
+						</select>
+					</label>
 					<button class="button button--accent" id="upd-physical" type="button">Refresh Failure Domains</button>
 					<label class="toggle" for="show-physical">
 						<input type="checkbox" id="show-physical" name="show-physical" checked>
@@ -670,7 +757,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?theme=light"></iframe>
+					<iframe class="frame frame--logical" scrolling="no" id="pgmap" name="pgmap" src="logical.html?theme=light&cluster=prod"></iframe>
 				</div>
 				<div class="legend" id="legend">
 					<ul class="legend-list">
@@ -699,7 +786,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--physical" scrolling="no" id="osdtree" name="osdtree" src="physical.html?depth=2&theme=light"></iframe>
+					<iframe class="frame frame--physical" scrolling="no" id="osdtree" name="osdtree" src="physical.html?depth=2&affectedLimit=20&theme=light&cluster=prod"></iframe>
 				</div>
 			</article>
 
@@ -711,7 +798,7 @@ $(function() {
 					</div>
 				</header>
 				<div class="card-body">
-					<iframe class="frame frame--iops" scrolling="no" id="iopsgraph" name="iops" src="iops.html?theme=light"></iframe>
+					<iframe class="frame frame--iops" scrolling="no" id="iopsgraph" name="iops" src="iops.html?theme=light&cluster=prod"></iframe>
 				</div>
 			</article>
 		</section>

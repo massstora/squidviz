@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
+<script>
+var clusterMatch = (window.location.search || '').match(/(?:\?|&)cluster=([^&]+)/);
+var clusterQuery = clusterMatch ? '&cluster=' + encodeURIComponent(decodeURIComponent(clusterMatch[1])) : '';
+</script>
 <style>
 html, body {
 	margin: 0;
@@ -21,6 +25,9 @@ iframe {
 </style>
 </head>
 <body>
-<iframe src="iops.html?mode=single" title="Ceph IOPS chart"></iframe>
+<iframe src="" id="single-iops-frame" title="Ceph IOPS chart"></iframe>
+<script>
+document.getElementById('single-iops-frame').src = 'iops.html?mode=single' + clusterQuery;
+</script>
 </body>
 </html>

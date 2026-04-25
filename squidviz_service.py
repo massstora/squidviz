@@ -8,6 +8,7 @@ the cluster for the same data.
 
 Exposed endpoints:
   /healthz
+  /json/config
   /json/osdtree
   /json/pgmap
   /json/osdmap
@@ -20,7 +21,6 @@ Run example:
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import logging
@@ -40,8 +40,7 @@ LOG = logging.getLogger("squidviz_service")
 # =============================================================================
 # SquidViz Service Settings
 # =============================================================================
-# Edit this section for normal deployments. Command-line arguments can still
-# override these values, but the intended simple startup is:
+# Edit this section for normal deployments. The intended startup is:
 #
 #   python3 squidviz_service.py
 #
@@ -54,12 +53,21 @@ CORS_ORIGIN = "*"
 LOG_LEVEL = "INFO"
 EXPOSE_ERROR_DETAILS = False
 
-# Ceph CLI identity. These defaults match the README's recommended read-only
-# client name and keyring path.
-CEPH_BIN = "/usr/bin/ceph"
-CEPH_NAME = "client.squidviz"
-CEPH_KEYRING = "/etc/ceph/ceph.client.squidviz.keyring"
 CEPH_COMMAND_TIMEOUT = 30.0
+
+# Multi-cluster support. The UI cluster selector is populated from this map.
+# Put each cluster's ceph binary, config, client name, and keyring directly in
+# its entry so operators only edit one place per cluster.
+DEFAULT_CLUSTER = "prod"
+CLUSTERS = {
+    "prod": {
+        "label": "prod",
+        "ceph_bin": "/usr/bin/ceph",
+        "ceph_conf": "/etc/ceph/ceph.conf",
+        "ceph_name": "client.squidviz",
+        "ceph_keyring": "/etc/ceph/ceph.client.squidviz.keyring",
+    },
+}
 
 # Cache lifetimes in seconds. These are shared by every wallboard using this
 # service, so many monitors do not multiply Ceph command execution.
@@ -90,7 +98,10 @@ REFRESH_WAIT_SECONDS = 5.0
 
 @dataclass
 class CephConfig:
-    ceph_bin: str = CEPH_BIN
+    cluster_id: str
+    label: str
+    ceph_bin: str
+    ceph_conf: str | None = None
     ceph_name: str | None = None
     ceph_keyring: str | None = None
 
@@ -103,15 +114,26 @@ class CephCommandError(RuntimeError):
         self.status_code = status_code
 
 
-def load_config() -> CephConfig:
-    return CephConfig(
-        ceph_bin=CEPH_BIN,
-        ceph_name=CEPH_NAME or None,
-        ceph_keyring=CEPH_KEYRING or None,
-    )
+def load_cluster_configs() -> dict[str, CephConfig]:
+    configs: dict[str, CephConfig] = {}
+
+    for cluster_id, entry in CLUSTERS.items():
+        configs[cluster_id] = CephConfig(
+            cluster_id=cluster_id,
+            label=str(entry.get("label") or cluster_id),
+            ceph_bin=str(entry.get("ceph_bin") or "/usr/bin/ceph"),
+            ceph_conf=str(entry.get("ceph_conf") or "/etc/ceph/ceph.conf") or None,
+            ceph_name=str(entry.get("ceph_name") or "client.squidviz") or None,
+            ceph_keyring=str(entry.get("ceph_keyring") or "/etc/ceph/ceph.client.squidviz.keyring") or None,
+        )
+
+    if DEFAULT_CLUSTER not in configs:
+        raise ValueError(f"DEFAULT_CLUSTER '{DEFAULT_CLUSTER}' is not present in CLUSTERS.")
+
+    return configs
 
 
-CONFIG = load_config()
+CLUSTER_CONFIGS = load_cluster_configs()
 
 ENDPOINT_TTLS: dict[str, float] = {
     "osdtree": OSDTREE_TTL,
@@ -238,21 +260,42 @@ def cached_endpoint(name: str, key_suffix: str, factory: Callable[[], dict[str, 
                 event.set()
 
 
-def ceph_command_prefix(arguments: list[str]) -> list[str]:
-    command = [CONFIG.ceph_bin]
+def resolve_cluster_id(query: dict[str, list[str]]) -> str:
+    requested = query.get("cluster", [DEFAULT_CLUSTER])[0]
+    cluster_id = str(requested or DEFAULT_CLUSTER)
 
-    if CONFIG.ceph_name:
-        command.extend(["--name", CONFIG.ceph_name])
+    if cluster_id not in CLUSTER_CONFIGS:
+        raise CephCommandError(
+            "Unknown cluster.",
+            {"cluster": cluster_id, "available_clusters": sorted(CLUSTER_CONFIGS.keys())},
+            400,
+        )
 
-    if CONFIG.ceph_keyring:
-        command.extend(["--keyring", CONFIG.ceph_keyring])
+    return cluster_id
+
+
+def get_cluster_config(cluster_id: str) -> CephConfig:
+    return CLUSTER_CONFIGS[cluster_id]
+
+
+def ceph_command_prefix(config: CephConfig, arguments: list[str]) -> list[str]:
+    command = [config.ceph_bin]
+
+    if config.ceph_conf:
+        command.extend(["-c", config.ceph_conf])
+
+    if config.ceph_name:
+        command.extend(["--name", config.ceph_name])
+
+    if config.ceph_keyring:
+        command.extend(["--keyring", config.ceph_keyring])
 
     command.extend(arguments)
     return command
 
 
-def run_ceph_json(arguments: list[str], optional: bool = False) -> Any | None:
-    command = ceph_command_prefix(arguments)
+def run_ceph_json(config: CephConfig, arguments: list[str], optional: bool = False) -> Any | None:
+    command = ceph_command_prefix(config, arguments)
 
     try:
         result = subprocess.run(
@@ -305,11 +348,11 @@ def run_ceph_json(arguments: list[str], optional: bool = False) -> Any | None:
         )
 
 
-def run_ceph_json_fallback(commands: list[list[str]]) -> Any:
+def run_ceph_json_fallback(config: CephConfig, commands: list[list[str]]) -> Any:
     last_error: dict[str, Any] | None = None
 
     for arguments in commands:
-        command = ceph_command_prefix(arguments)
+        command = ceph_command_prefix(config, arguments)
         try:
             result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=CEPH_COMMAND_TIMEOUT)
         except OSError as exc:
@@ -339,8 +382,8 @@ def run_ceph_json_fallback(commands: list[list[str]]) -> Any:
     raise CephCommandError("All Ceph command fallbacks failed.", {"last_error": last_error})
 
 
-def get_osdtree_payload() -> dict[str, Any]:
-    input_json = run_ceph_json(["osd", "tree", "--format=json"])
+def get_osdtree_payload(config: CephConfig) -> dict[str, Any]:
+    input_json = run_ceph_json(config, ["osd", "tree", "--format=json"])
     nodes = input_json.get("nodes", [])
     if not nodes:
         raise CephCommandError("Ceph OSD tree did not contain any nodes.")
@@ -374,8 +417,8 @@ def get_osdtree_payload() -> dict[str, Any]:
     return build_node(root_id) or {}
 
 
-def get_pgmap_payload() -> dict[str, Any]:
-    status = run_ceph_json(["-s", "-f", "json"])
+def get_pgmap_payload(config: CephConfig) -> dict[str, Any]:
+    status = run_ceph_json(config, ["-s", "-f", "json"])
     pgmap = status.get("pgmap", {})
     version = pgmap.get("version")
     pgs_by_state = pgmap.get("pgs_by_state", [])
@@ -404,8 +447,8 @@ def get_pgmap_payload() -> dict[str, Any]:
     }
 
 
-def get_osdmap_payload() -> dict[str, Any]:
-    osd_dump = run_ceph_json(["osd", "dump", "--format=json"])
+def get_osdmap_payload(config: CephConfig) -> dict[str, Any]:
+    osd_dump = run_ceph_json(config, ["osd", "dump", "--format=json"])
     osdmap = osd_dump.get("osdmap", osd_dump)
     version = osdmap.get("epoch")
     osds = osd_dump.get("osds", osdmap.get("osds", []))
@@ -456,11 +499,12 @@ def get_osdmap_payload() -> dict[str, Any]:
     }
 
 
-def get_pgdump_payload() -> dict[str, Any]:
-    osd_dump = run_ceph_json(["osd", "dump", "--format=json"])
+def get_pgdump_payload(config: CephConfig) -> dict[str, Any]:
+    osd_dump = run_ceph_json(config, ["osd", "dump", "--format=json"])
     pools = {pool["pool"]: pool["pool_name"] for pool in osd_dump.get("pools", [])}
 
     pg_dump = run_ceph_json_fallback(
+        config,
         [
             ["pg", "dump_json", "--dumpcontents=pgs"],
             ["pg", "dump", "--format=json"],
@@ -565,8 +609,8 @@ def get_pgdump_payload() -> dict[str, Any]:
     return pg_tree
 
 
-def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
-    status = run_ceph_json(["-s", "-f", "json"])
+def get_iops_payload(config: CephConfig, query: dict[str, list[str]]) -> dict[str, Any]:
+    status = run_ceph_json(config, ["-s", "-f", "json"])
     pgmap = status.get("pgmap", {})
 
     include_latency = query.get("latency", ["0"])[0] == "1"
@@ -579,7 +623,7 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
     high_latency_osds: list[dict[str, Any]] = []
 
     if include_latency:
-        osd_perf = run_ceph_json(["osd", "perf", "--format=json"], optional=True)
+        osd_perf = run_ceph_json(config, ["osd", "perf", "--format=json"], optional=True)
         if osd_perf is not None:
             if isinstance(osd_perf, list):
                 perf_entries = osd_perf
@@ -645,6 +689,11 @@ def get_iops_payload(query: dict[str, list[str]]) -> dict[str, Any]:
 def get_config_payload() -> dict[str, Any]:
     return {
         "ok": True,
+        "default_cluster": DEFAULT_CLUSTER,
+        "clusters": [
+            {"id": cluster.cluster_id, "label": cluster.label}
+            for cluster in sorted(CLUSTER_CONFIGS.values(), key=lambda entry: entry.label.lower())
+        ],
         "affected_tree_endpoint_limit": AFFECTED_TREE_ENDPOINT_LIMIT,
         "cache_ttls": {
             "iops": ENDPOINT_TTLS["iops"],
@@ -683,28 +732,38 @@ class SquidVizHandler(BaseHTTPRequestHandler):
             elif route == "/json/config":
                 status_code, payload = json_response(get_config_payload())
             elif route == "/json/osdtree":
+                cluster_id = resolve_cluster_id(query)
+                config = get_cluster_config(cluster_id)
                 force_refresh = query.get("refresh", ["0"])[0] == "1"
                 status_code, payload = json_response(
-                    set_cached_payload("osdtree:default", get_osdtree_payload(), ENDPOINT_TTLS["osdtree"])
+                    set_cached_payload(f"osdtree:{cluster_id}:default", get_osdtree_payload(config), ENDPOINT_TTLS["osdtree"])
                     if force_refresh
-                    else cached_endpoint("osdtree", "default", get_osdtree_payload)
+                    else cached_endpoint("osdtree", f"{cluster_id}:default", lambda: get_osdtree_payload(config))
                 )
             elif route == "/json/pgmap":
+                cluster_id = resolve_cluster_id(query)
+                config = get_cluster_config(cluster_id)
                 status_code, payload = json_response(
-                    cached_endpoint("pgmap", "default", get_pgmap_payload)
+                    cached_endpoint("pgmap", f"{cluster_id}:default", lambda: get_pgmap_payload(config))
                 )
             elif route == "/json/osdmap":
+                cluster_id = resolve_cluster_id(query)
+                config = get_cluster_config(cluster_id)
                 status_code, payload = json_response(
-                    cached_endpoint("osdmap", "default", get_osdmap_payload)
+                    cached_endpoint("osdmap", f"{cluster_id}:default", lambda: get_osdmap_payload(config))
                 )
             elif route == "/json/pgdump":
+                cluster_id = resolve_cluster_id(query)
+                config = get_cluster_config(cluster_id)
                 status_code, payload = json_response(
-                    cached_endpoint("pgdump", "default", get_pgdump_payload)
+                    cached_endpoint("pgdump", f"{cluster_id}:default", lambda: get_pgdump_payload(config))
                 )
             elif route == "/json/iops":
+                cluster_id = resolve_cluster_id(query)
+                config = get_cluster_config(cluster_id)
                 latency_flag = "1" if query.get("latency", ["0"])[0] == "1" else "0"
                 status_code, payload = json_response(
-                    cached_endpoint("iops", f"latency={latency_flag}", lambda: get_iops_payload(query))
+                    cached_endpoint("iops", f"{cluster_id}:latency={latency_flag}", lambda: get_iops_payload(config, query))
                 )
             else:
                 status_code, payload = error_response("Not found.", status_code=404)
@@ -731,123 +790,59 @@ class SquidVizServer(ThreadingHTTPServer):
         self.cors_origin = cors_origin
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the SquidViz backend microservice.")
-    parser.add_argument(
-        "--host",
-        default=SERVICE_HOST,
-        help=f"Bind address. Use 0.0.0.0 to listen remotely. Default: {SERVICE_HOST}",
-    )
-    parser.add_argument("--port", type=int, default=SERVICE_PORT, help=f"Bind port. Default: {SERVICE_PORT}")
-    parser.add_argument("--ceph-bin", default=CEPH_BIN, help=f"Path to the ceph binary. Default: {CEPH_BIN}")
-    parser.add_argument("--ceph-name", default=CEPH_NAME, help=f"Ceph client name. Default: {CEPH_NAME}")
-    parser.add_argument("--ceph-keyring", default=CEPH_KEYRING, help=f"Path to the Ceph keyring. Default: {CEPH_KEYRING}")
-    parser.add_argument("--ceph-command-timeout", type=float, default=CEPH_COMMAND_TIMEOUT, help=f"Ceph command timeout in seconds. Default: {int(CEPH_COMMAND_TIMEOUT)}")
-    parser.add_argument(
-        "--cors-origin",
-        default=CORS_ORIGIN,
-        help=f"Allowed browser origin for cross-host requests. Default: {CORS_ORIGIN}",
-    )
-    parser.add_argument(
-        "--log-level",
-        default=LOG_LEVEL,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help=f"Logging verbosity. Default: {LOG_LEVEL}",
-    )
-    parser.add_argument("--iops-ttl", type=float, default=ENDPOINT_TTLS["iops"], help="IOPS cache lifetime in seconds. Default: 2")
-    parser.add_argument("--pgmap-ttl", type=float, default=ENDPOINT_TTLS["pgmap"], help="PG map check cache lifetime in seconds. Default: 10")
-    parser.add_argument("--pgdump-ttl", type=float, default=ENDPOINT_TTLS["pgdump"], help="Full PG dump cache lifetime in seconds. Default: 10")
-    parser.add_argument(
-        "--pgdump-too-many-ttl",
-        type=float,
-        default=PGDUMP_TOO_MANY_TTL,
-        help=f"Full PG dump cache lifetime when unhealthy PG count exceeds the visualization cap. Default: {int(PGDUMP_TOO_MANY_TTL)}",
-    )
-    parser.add_argument("--osdtree-ttl", type=float, default=ENDPOINT_TTLS["osdtree"], help="OSD tree cache lifetime in seconds. Default: 600")
-    parser.add_argument("--osdmap-ttl", type=float, default=ENDPOINT_TTLS["osdmap"], help="OSD map check cache lifetime in seconds. Default: 10")
-    parser.add_argument(
-        "--max-unhealthy-pgs",
-        type=int,
-        default=MAX_UNHEALTHY_PGS,
-        help=f"Maximum unhealthy PGs to include in the logical visualization. Default: {MAX_UNHEALTHY_PGS}",
-    )
-    parser.add_argument(
-        "--affected-tree-endpoint-limit",
-        type=int,
-        default=AFFECTED_TREE_ENDPOINT_LIMIT,
-        help=f"Default affected OSD expansion limit for the failure-domain UI. Default: {AFFECTED_TREE_ENDPOINT_LIMIT}",
-    )
-    return parser.parse_args()
+def validate_settings() -> None:
+    if SERVICE_PORT < 1 or SERVICE_PORT > 65535:
+        raise ValueError("SERVICE_PORT must be between 1 and 65535.")
+    if CEPH_COMMAND_TIMEOUT < 1:
+        raise ValueError("CEPH_COMMAND_TIMEOUT must be at least 1 second.")
+    if MAX_UNHEALTHY_PGS < 1:
+        raise ValueError("MAX_UNHEALTHY_PGS must be at least 1.")
+    if AFFECTED_TREE_ENDPOINT_LIMIT < 1:
+        raise ValueError("AFFECTED_TREE_ENDPOINT_LIMIT must be at least 1.")
+    if REFRESH_WAIT_SECONDS < 0:
+        raise ValueError("REFRESH_WAIT_SECONDS must be 0 or greater.")
+    if LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        raise ValueError("LOG_LEVEL must be one of DEBUG, INFO, WARNING, or ERROR.")
 
-
-def apply_cache_ttls(args: argparse.Namespace) -> None:
-    global PGDUMP_TOO_MANY_TTL
-
-    requested_ttls = {
-        "iops": args.iops_ttl,
-        "pgmap": args.pgmap_ttl,
-        "pgdump": args.pgdump_ttl,
-        "osdtree": args.osdtree_ttl,
-        "osdmap": args.osdmap_ttl,
-    }
-
-    for endpoint, ttl in requested_ttls.items():
+    for endpoint, ttl in ENDPOINT_TTLS.items():
         if ttl < 0:
             raise ValueError(f"{endpoint} TTL must be 0 or greater.")
-        ENDPOINT_TTLS[endpoint] = ttl
 
-    if args.pgdump_too_many_ttl < 0:
-        raise ValueError("pgdump too-many TTL must be 0 or greater.")
-    PGDUMP_TOO_MANY_TTL = args.pgdump_too_many_ttl
+    if PGDUMP_TOO_MANY_TTL < 0:
+        raise ValueError("PGDUMP_TOO_MANY_TTL must be 0 or greater.")
 
+    if not CLUSTER_CONFIGS:
+        raise ValueError("CLUSTERS must define at least one cluster.")
 
-def apply_ceph_overrides(args: argparse.Namespace) -> None:
-    global CEPH_COMMAND_TIMEOUT
-
-    if args.ceph_bin:
-        CONFIG.ceph_bin = args.ceph_bin
-    if args.ceph_name:
-        CONFIG.ceph_name = args.ceph_name
-    if args.ceph_keyring:
-        CONFIG.ceph_keyring = args.ceph_keyring
-    if args.ceph_command_timeout < 1:
-        raise ValueError("Ceph command timeout must be at least 1 second.")
-    CEPH_COMMAND_TIMEOUT = args.ceph_command_timeout
-
-
-def apply_visualization_limits(args: argparse.Namespace) -> None:
-    global AFFECTED_TREE_ENDPOINT_LIMIT, MAX_UNHEALTHY_PGS
-
-    if args.max_unhealthy_pgs < 1:
-        raise ValueError("max unhealthy PG limit must be at least 1.")
-    if args.affected_tree_endpoint_limit < 1:
-        raise ValueError("affected tree endpoint limit must be at least 1.")
-
-    MAX_UNHEALTHY_PGS = args.max_unhealthy_pgs
-    AFFECTED_TREE_ENDPOINT_LIMIT = args.affected_tree_endpoint_limit
+    for cluster_id, cluster in CLUSTER_CONFIGS.items():
+        if not cluster.ceph_bin:
+            raise ValueError(f"Cluster '{cluster_id}' is missing ceph_bin.")
 
 
 def main() -> None:
-    args = parse_args()
-    apply_ceph_overrides(args)
-    apply_cache_ttls(args)
-    apply_visualization_limits(args)
-    logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
-    LOG.info("Starting SquidViz service on %s:%s", args.host, args.port)
-    LOG.info("Using Ceph binary: %s", CONFIG.ceph_bin)
-    if CONFIG.ceph_name:
-        LOG.info("Using Ceph client: %s", CONFIG.ceph_name)
-    if CONFIG.ceph_keyring:
-        LOG.info("Using Ceph keyring: %s", CONFIG.ceph_keyring)
+    validate_settings()
+    logging.basicConfig(level=getattr(logging, LOG_LEVEL), format="%(asctime)s %(levelname)s %(message)s")
+    LOG.info("Starting SquidViz service on %s:%s", SERVICE_HOST, SERVICE_PORT)
+    for cluster_id in sorted(CLUSTER_CONFIGS.keys()):
+        cluster = CLUSTER_CONFIGS[cluster_id]
+        LOG.info(
+            "Cluster %s (%s): bin=%s conf=%s name=%s keyring=%s",
+            cluster.cluster_id,
+            cluster.label,
+            cluster.ceph_bin,
+            cluster.ceph_conf or "-",
+            cluster.ceph_name or "-",
+            cluster.ceph_keyring or "-",
+        )
     LOG.info("Using Ceph command timeout: %ss", CEPH_COMMAND_TIMEOUT)
-    LOG.info("Using CORS origin: %s", args.cors_origin)
+    LOG.info("Using CORS origin: %s", CORS_ORIGIN)
     LOG.info("Using cache TTLs: %s", ENDPOINT_TTLS)
     LOG.info("Using PG dump too-many TTL: %s", PGDUMP_TOO_MANY_TTL)
     LOG.info("Using max unhealthy PG visualization limit: %s", MAX_UNHEALTHY_PGS)
     LOG.info("Using affected tree endpoint limit: %s", AFFECTED_TREE_ENDPOINT_LIMIT)
     LOG.info("Using OSD latency warning threshold: %sms", LATENCY_WARNING_MS)
 
-    server = SquidVizServer((args.host, args.port), SquidVizHandler, args.cors_origin)
+    server = SquidVizServer((SERVICE_HOST, SERVICE_PORT), SquidVizHandler, CORS_ORIGIN)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
